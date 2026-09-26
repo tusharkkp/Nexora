@@ -11,6 +11,7 @@ pub mod stemmer;
 pub mod storage;
 pub mod tokenizer;
 pub mod trie;
+pub mod server;
 
 pub use analyzer::{Analyzer, Term};
 pub use compression::{
@@ -32,6 +33,7 @@ pub use index::{DocId, InvertedIndex, Posting};
 pub use ranking::{
     idf, rank_bm25, rank_bm25_with_pagerank, BM25Params, HybridRankingParams, ScoredDocument,
 };
+pub use server::{SearchEngineState, SearchServer, ServerConfig};
 pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};
 pub use spelling::{damerau_levenshtein, SpellChecker, Suggestion};
 pub use stemmer::stem;

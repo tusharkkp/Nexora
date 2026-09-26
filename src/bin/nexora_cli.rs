@@ -7,8 +7,9 @@ use nexora::{
     compare_rankers, compute_pagerank, generate_snippet, load_from_file,
     load_metadata_from_file, rank_bm25_with_pagerank, save_metadata_to_file, save_to_file,
     CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
-    HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, QueryJudgment, SnippetConfig,
-    SpellChecker, UrlFrontier, WebGraph,
+    HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, QueryJudgment,
+    SearchEngineState, SearchServer, ServerConfig, SnippetConfig, SpellChecker, UrlFrontier,
+    WebGraph,
 };
 
 /// In-memory representation of an indexed document with optional URL and link authority.
@@ -55,6 +56,7 @@ fn main() {
         match args[1].as_str() {
             "crawl" => handle_cli_crawl(&args[2..]),
             "search" => handle_cli_search(&args[2..]),
+            "serve" => handle_cli_serve(&args[2..]),
             "--help" | "-h" | "help" => print_cli_usage(),
             unknown => {
                 eprintln!("Unknown command: '{}'. Run '--help' for usage.", unknown);
@@ -71,10 +73,12 @@ fn print_cli_usage() {
     println!("USAGE:");
     println!("  nexora_cli crawl <seed_url> [--max-pages <N>] [--output <file.nex>]");
     println!("  nexora_cli search <query> [--index <file.nex>]");
+    println!("  nexora_cli serve [--port <PORT>] [--index <file.nex>]");
     println!("  nexora_cli                                  (launches interactive REPL)\n");
     println!("EXAMPLES:");
     println!("  nexora_cli crawl https://example.com --max-pages 10 --output web.nex");
     println!("  nexora_cli search \"search engine\" --index web.nex");
+    println!("  nexora_cli serve --port 8080 --index web.nex");
 }
 
 fn handle_cli_crawl(args: &[String]) {
@@ -143,6 +147,73 @@ fn handle_cli_search(args: &[String]) {
     };
 
     handle_bm25_search(&index, &doc_store, query);
+}
+
+fn handle_cli_serve(args: &[String]) {
+    let mut port: u16 = 8080;
+    let mut index_path: Option<&str> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" | "-p" if i + 1 < args.len() => {
+                port = args[i + 1].parse().unwrap_or(8080);
+                i += 2;
+            }
+            "--index" if i + 1 < args.len() => {
+                index_path = Some(&args[i + 1]);
+                i += 2;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let (index, doc_store) = if let Some(path) = index_path {
+        load_index_and_metadata(path).unwrap_or_else(|e| {
+            eprintln!("Error loading index from '{}': {}", path, e);
+            std::process::exit(1);
+        })
+    } else {
+        build_default_corpus()
+    };
+
+    start_repl_server(&index, &doc_store, port);
+}
+
+fn start_repl_server(
+    index: &InvertedIndex,
+    doc_store: &HashMap<DocId, DocumentEntry>,
+    port: u16,
+) {
+    let mut metadata = HashMap::new();
+    for (id, doc) in doc_store {
+        metadata.insert(
+            *id,
+            DocumentMetadata {
+                doc_id: *id,
+                url: doc.url.clone().unwrap_or_default(),
+                title: doc.title.clone(),
+                body: doc.body.clone(),
+                pagerank: doc.pagerank,
+            },
+        );
+    }
+
+    let state = SearchEngineState::new(index.clone(), metadata);
+    let config = ServerConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let server = SearchServer::new(config, state);
+
+    println!("\n🌐 Starting Embedded Web Server & SERP Interface on http://localhost:{}", port);
+    println!("Press Ctrl+C in terminal to stop server.\n");
+
+    if let Err(e) = server.run() {
+        eprintln!("Server error: {}", e);
+    }
 }
 
 fn run_interactive_repl() {
@@ -248,6 +319,14 @@ fn run_interactive_repl() {
                         }
                         Err(e) => println!("✘ Failed to load index: {}", e),
                     }
+                } else if query == ":serve" || query.starts_with(":serve ") {
+                    let port: u16 = query
+                        .strip_prefix(":serve")
+                        .unwrap_or("")
+                        .trim()
+                        .parse()
+                        .unwrap_or(8080);
+                    start_repl_server(&index, &doc_store, port);
                 } else if let Some(prefix) = query.strip_prefix(":suggest ") {
                     handle_suggest(&index, &doc_store, prefix.trim());
                 } else if let Some(args) = query.strip_prefix(":and ") {
@@ -277,6 +356,7 @@ fn print_help() {
     println!("  \"<phrase>\"                  Exact consecutive phrase search (e.g. '\"inverted index\"')");
     println!("  <prefix>*                   Prefix wildcard search (e.g. 'rust*' or 'index*')");
     println!("  :suggest <prefix>           Frequency-ranked autocomplete suggestions (e.g. ':suggest sea')");
+    println!("  :serve [port]               Launch embedded HTTP search server & Web SERP (default: 8080)");
     println!("  :and <t1> <t2>              Boolean AND intersection");
     println!("  :or  <t1> <t2>              Boolean OR union");
     println!("  :crawl <url> [N] [out.nex]  Crawl website, calculate PageRank, and save index");
