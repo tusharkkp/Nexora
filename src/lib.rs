@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod compression;
+pub mod crawler;
 pub mod evaluation;
 pub mod index;
 pub mod ranking;
@@ -11,6 +12,9 @@ pub use analyzer::{Analyzer, Term};
 pub use compression::{
     compress_sorted_u32, decode_deltas, decode_vbyte, decompress_sorted_u32, encode_deltas,
     encode_vbyte,
+};
+pub use crawler::{
+    normalize_url, parse_url, resolve_relative_url, ParsedUrl, UrlFrontier,
 };
 pub use evaluation::{
     dcg_at_k, evaluate_bm25, idcg_at_k, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank,
