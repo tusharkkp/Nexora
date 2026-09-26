@@ -233,6 +233,40 @@ impl InvertedIndex {
         result
     }
 
+    /// Computes the difference of two sorted postings lists (p1 \ p2) in O(L1 + L2) time.
+    /// Returns all postings in p1 that do not appear in p2 (Set Difference / AND NOT).
+    pub fn difference(p1: &[Posting], p2: &[Posting]) -> Vec<Posting> {
+        let mut result = Vec::new();
+        let (mut i, mut j) = (0, 0);
+
+        while i < p1.len() && j < p2.len() {
+            if p1[i].doc_id < p2[j].doc_id {
+                result.push(p1[i].clone());
+                i += 1;
+            } else if p1[i].doc_id == p2[j].doc_id {
+                // Exclude: document exists in the negated list p2
+                i += 1;
+                j += 1;
+            } else {
+                j += 1;
+            }
+        }
+
+        while i < p1.len() {
+            result.push(p1[i].clone());
+            i += 1;
+        }
+
+        result
+    }
+
+    /// Returns all active document IDs in sorted order.
+    pub fn all_doc_ids(&self) -> Vec<DocId> {
+        let mut ids: Vec<DocId> = self.doc_lengths.keys().copied().collect();
+        ids.sort();
+        ids
+    }
+
     /// Performs a Boolean AND search across multiple terms.
     ///
     /// Optimization: Intersects the shortest postings lists first,

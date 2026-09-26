@@ -12,6 +12,7 @@ pub mod storage;
 pub mod tokenizer;
 pub mod trie;
 pub mod server;
+pub mod query;
 
 pub use analyzer::{Analyzer, Term};
 pub use compression::{
@@ -30,6 +31,9 @@ pub use evaluation::{
 };
 pub use graph::{compute_pagerank, PageRankParams, WebGraph};
 pub use index::{DocId, InvertedIndex, Posting};
+pub use query::{
+    execute_query, parse_query, tokenize_query, QueryNode, QueryParseError, QueryToken,
+};
 pub use ranking::{
     idf, rank_bm25, rank_bm25_with_pagerank, BM25Params, HybridRankingParams, ScoredDocument,
 };

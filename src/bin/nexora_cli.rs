@@ -4,9 +4,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use nexora::{
-    compare_rankers, compute_pagerank, generate_snippet, load_from_file,
-    load_metadata_from_file, rank_bm25_with_pagerank, save_metadata_to_file, save_to_file,
-    CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
+    compare_rankers, compute_pagerank, execute_query, generate_snippet, load_from_file,
+    load_metadata_from_file, parse_query, rank_bm25_with_pagerank, save_metadata_to_file,
+    save_to_file, CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
     HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, QueryJudgment,
     SearchEngineState, SearchServer, ServerConfig, SnippetConfig, SpellChecker, UrlFrontier,
     WebGraph,
@@ -329,6 +329,8 @@ fn run_interactive_repl() {
                     start_repl_server(&index, &doc_store, port);
                 } else if let Some(prefix) = query.strip_prefix(":suggest ") {
                     handle_suggest(&index, &doc_store, prefix.trim());
+                } else if let Some(expr) = query.strip_prefix(":query ") {
+                    handle_boolean_ast_search(&index, &doc_store, expr.trim());
                 } else if let Some(args) = query.strip_prefix(":and ") {
                     handle_boolean_and(&index, &doc_store, args);
                 } else if let Some(args) = query.strip_prefix(":or ") {
@@ -342,6 +344,14 @@ fn run_interactive_repl() {
                     } else {
                         handle_bm25_search(&index, &doc_store, query);
                     }
+                } else if query.contains(" AND ")
+                    || query.contains(" OR ")
+                    || query.contains(" NOT ")
+                    || query.contains(" && ")
+                    || query.contains(" || ")
+                    || (query.contains('(') && query.contains(')'))
+                {
+                    handle_boolean_ast_search(&index, &doc_store, query);
                 } else {
                     handle_bm25_search(&index, &doc_store, query);
                 }
@@ -355,7 +365,9 @@ fn print_help() {
     println!("  <terms>                     Free-text search (BM25 + PageRank hybrid ranking)");
     println!("  \"<phrase>\"                  Exact consecutive phrase search (e.g. '\"inverted index\"')");
     println!("  <prefix>*                   Prefix wildcard search (e.g. 'rust*' or 'index*')");
+    println!("  <boolean_expression>        Boolean AST search (e.g. '(rust OR python) AND NOT memory')");
     println!("  :suggest <prefix>           Frequency-ranked autocomplete suggestions (e.g. ':suggest sea')");
+    println!("  :query <expr>               Compile & execute structured AST query");
     println!("  :serve [port]               Launch embedded HTTP search server & Web SERP (default: 8080)");
     println!("  :and <t1> <t2>              Boolean AND intersection");
     println!("  :or  <t1> <t2>              Boolean OR union");
@@ -843,6 +855,50 @@ fn handle_prefix_search(
                 println!("   \x1b[34m{}\x1b[0m", url);
             }
             println!("   \"{}\"\n", snippet);
+        }
+    }
+}
+
+fn handle_boolean_ast_search(
+    index: &InvertedIndex,
+    doc_store: &HashMap<DocId, DocumentEntry>,
+    query_str: &str,
+) {
+    let start = Instant::now();
+    match parse_query(query_str) {
+        Ok(ast) => {
+            println!("\n--- Compiled Boolean Query AST ---");
+            println!("  {:?}", ast);
+
+            let postings = execute_query(&ast, index);
+            let duration = start.elapsed();
+
+            println!(
+                "\n--- Boolean AST Results for: '{}' ({} matches in {:.2?}) ---",
+                query_str,
+                postings.len(),
+                duration
+            );
+
+            if postings.is_empty() {
+                println!("No documents matched the boolean query expression.");
+                return;
+            }
+
+            let snippet_cfg = SnippetConfig::default();
+            for (rank, posting) in postings.iter().enumerate() {
+                if let Some(doc) = doc_store.get(&posting.doc_id) {
+                    let snippet = generate_snippet(&doc.body, query_str, index.analyzer(), &snippet_cfg);
+                    println!("{}. [Doc {}] {}", rank + 1, doc.id, doc.title);
+                    if let Some(ref url) = doc.url {
+                        println!("   \x1b[34m{}\x1b[0m", url);
+                    }
+                    println!("   \"{}\"\n", snippet);
+                }
+            }
+        }
+        Err(e) => {
+            println!("✘ Query Syntax Error: {}", e);
         }
     }
 }
