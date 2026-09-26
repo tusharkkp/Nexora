@@ -12,7 +12,7 @@
 pub fn stem(word: &str) -> String {
     // Guard 1: Words with 2 or fewer characters cannot be safely stemmed.
     if word.chars().count() <= 2 {
-        return word.to_string();
+        return word.to_lowercase();
     }
 
     // Guard 2: Skip tokens containing non-alphabetic characters (e.g. URLs, numbers, IPs)
