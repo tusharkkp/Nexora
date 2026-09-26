@@ -25,17 +25,18 @@ pub use crawler::{
     HttpFetcherConfig, MockFetcher, PageFetcher, ParsedUrl, RobotsTxt, UrlFrontier,
 };
 pub use evaluation::{
-    compare_rankers, dcg_at_k, evaluate_bm25, evaluate_hybrid_pagerank, idcg_at_k, ndcg_at_k,
-    precision_at_k, recall_at_k, reciprocal_rank, BenchmarkComparison, BenchmarkMetrics,
+    compare_rankers, dcg_at_k, evaluate_bm25, evaluate_bm25f, evaluate_hybrid_pagerank, idcg_at_k,
+    ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank, BenchmarkComparison, BenchmarkMetrics,
     QueryJudgment,
 };
 pub use graph::{compute_pagerank, PageRankParams, WebGraph};
-pub use index::{DocId, InvertedIndex, Posting};
+pub use index::{DocId, Field, InvertedIndex, MultiFieldIndex, Posting};
 pub use query::{
     execute_query, parse_query, tokenize_query, QueryNode, QueryParseError, QueryToken,
 };
 pub use ranking::{
-    idf, rank_bm25, rank_bm25_with_pagerank, BM25Params, HybridRankingParams, ScoredDocument,
+    idf, rank_bm25, rank_bm25_with_pagerank, rank_bm25f, rank_bm25f_with_pagerank, BM25FParams,
+    BM25Params, FieldConfig, HybridBM25FParams, HybridRankingParams, ScoredDocument,
 };
 pub use server::{SearchEngineState, SearchServer, ServerConfig};
 pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};

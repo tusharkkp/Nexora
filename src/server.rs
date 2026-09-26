@@ -6,8 +6,8 @@ use tiny_http::{Header, Response, Server, StatusCode};
 
 use crate::crawler::{CrawlConfig, Crawler, HttpFetcher, UrlFrontier};
 use crate::graph::{compute_pagerank, PageRankParams, WebGraph};
-use crate::index::{DocId, InvertedIndex};
-use crate::ranking::{rank_bm25_with_pagerank, HybridRankingParams, ScoredDocument};
+use crate::index::{DocId, InvertedIndex, MultiFieldIndex};
+use crate::ranking::{rank_bm25f_with_pagerank, HybridBM25FParams, ScoredDocument};
 use crate::snippet::{generate_snippet, HighlightFormat, SnippetConfig};
 use crate::spelling::SpellChecker;
 use crate::storage::DocumentMetadata;
@@ -32,6 +32,7 @@ impl Default for ServerConfig {
 /// Internal shared state for the search engine.
 pub struct SearchEngineState {
     pub index: InvertedIndex,
+    pub multi_index: MultiFieldIndex,
     pub doc_metadata: HashMap<DocId, DocumentMetadata>,
     pub trie: PrefixTrie,
     pub spell_checker: SpellChecker,
@@ -39,6 +40,11 @@ pub struct SearchEngineState {
 
 impl SearchEngineState {
     pub fn new(index: InvertedIndex, doc_metadata: HashMap<DocId, DocumentMetadata>) -> Self {
+        let mut multi_index = MultiFieldIndex::new();
+        for (&id, doc) in &doc_metadata {
+            multi_index.add_document(id, &doc.title, &doc.body, "");
+        }
+
         let trie = PrefixTrie::from_documents(
             doc_metadata.values().map(|d| format!("{} {}", d.title, d.body)),
         );
@@ -48,6 +54,7 @@ impl SearchEngineState {
 
         Self {
             index,
+            multi_index,
             doc_metadata,
             trie,
             spell_checker,
@@ -57,6 +64,7 @@ impl SearchEngineState {
     /// Creates default demo state with sample computer science & web search documents.
     pub fn default_demo() -> Self {
         let mut index = InvertedIndex::new();
+        let mut multi_index = MultiFieldIndex::new();
         let mut metadata = HashMap::new();
 
         let docs = &[
@@ -101,6 +109,7 @@ impl SearchEngineState {
         for (id, &(title, text, url, pr)) in docs.iter().enumerate() {
             let doc_id = id as DocId;
             index.add_document(doc_id, text);
+            multi_index.add_document(doc_id, title, text, "");
             metadata.insert(
                 doc_id,
                 DocumentMetadata {
@@ -113,11 +122,30 @@ impl SearchEngineState {
             );
         }
 
-        Self::new(index, metadata)
+        let trie = PrefixTrie::from_documents(
+            metadata.values().map(|d| format!("{} {}", d.title, d.body)),
+        );
+        let spell_checker = SpellChecker::from_documents(
+            metadata.values().map(|d| format!("{} {}", d.title, d.body)),
+        );
+
+        Self {
+            index,
+            multi_index,
+            doc_metadata: metadata,
+            trie,
+            spell_checker,
+        }
     }
 
-    /// Rebuilds trie and spell checker after a new crawl or index update.
+    /// Rebuilds multi-field index, trie, and spell checker after a new crawl or index update.
     pub fn rebuild_indexes(&mut self) {
+        let mut multi = MultiFieldIndex::new();
+        for (&id, doc) in &self.doc_metadata {
+            multi.add_document(id, &doc.title, &doc.body, "");
+        }
+        self.multi_index = multi;
+
         self.trie = PrefixTrie::from_documents(
             self.doc_metadata
                 .values()
@@ -337,12 +365,12 @@ fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> St
         .map(|(&id, meta)| (id, meta.pagerank))
         .collect();
 
-    let hybrid_params = HybridRankingParams::default();
-    let mut results: Vec<ScoredDocument> = rank_bm25_with_pagerank(
-        &state.index,
+    let hybrid_f_params = HybridBM25FParams::default();
+    let mut results: Vec<ScoredDocument> = rank_bm25f_with_pagerank(
+        &state.multi_index,
         clean,
         &pr_map,
-        &hybrid_params,
+        &hybrid_f_params,
     );
 
     let mut did_you_mean: Option<String> = None;
@@ -350,11 +378,11 @@ fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> St
     if results.is_empty() {
         if let Some(suggested) = state.spell_checker.suggest_query(clean) {
             did_you_mean = Some(suggested.clone());
-            results = rank_bm25_with_pagerank(
-                &state.index,
+            results = rank_bm25f_with_pagerank(
+                &state.multi_index,
                 &suggested,
                 &pr_map,
-                &hybrid_params,
+                &hybrid_f_params,
             );
         }
     }

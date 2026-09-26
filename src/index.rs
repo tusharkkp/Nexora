@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::{Analyzer, Term};
 
@@ -35,11 +35,16 @@ pub struct InvertedIndex {
 impl InvertedIndex {
     /// Creates a new, empty inverted index using the default Analyzer.
     pub fn new() -> Self {
+        Self::with_analyzer(Analyzer::new())
+    }
+
+    /// Creates a new, empty inverted index using the provided Analyzer.
+    pub fn with_analyzer(analyzer: Analyzer) -> Self {
         Self {
             dictionary: HashMap::new(),
             doc_lengths: HashMap::new(),
             total_documents: 0,
-            analyzer: Analyzer::new(),
+            analyzer,
         }
     }
 
@@ -155,6 +160,49 @@ impl InvertedIndex {
             }
 
             postings_list.push(posting);
+        }
+    }
+
+    /// Appends additional text to an existing document, or indexes it as a new document if not present.
+    ///
+    /// Token positions for the appended text are shifted by the document's previous length.
+    pub fn append_document(&mut self, doc_id: DocId, text: &str) {
+        if !self.doc_lengths.contains_key(&doc_id) {
+            self.add_document(doc_id, text);
+            return;
+        }
+
+        let base_offset = *self.doc_lengths.get(&doc_id).unwrap();
+        let terms: Vec<Term> = self.analyzer.analyze(text);
+        let additional_length = terms.len() as u32;
+
+        *self.doc_lengths.get_mut(&doc_id).unwrap() += additional_length;
+
+        let mut term_positions: HashMap<String, Vec<u32>> = HashMap::new();
+        for term in terms {
+            term_positions
+                .entry(term.text)
+                .or_default()
+                .push(base_offset + term.position as u32);
+        }
+
+        for (term_text, new_positions) in term_positions {
+            let postings_list = self.dictionary.entry(term_text).or_default();
+            if let Some(pos_idx) = postings_list.iter().position(|p| p.doc_id == doc_id) {
+                let posting = &mut postings_list[pos_idx];
+                posting.term_frequency += new_positions.len() as u32;
+                posting.positions.extend(new_positions);
+            } else {
+                let posting = Posting {
+                    doc_id,
+                    term_frequency: new_positions.len() as u32,
+                    positions: new_positions,
+                };
+                let idx = postings_list
+                    .binary_search_by_key(&doc_id, |p| p.doc_id)
+                    .unwrap_or_else(|e| e);
+                postings_list.insert(idx, posting);
+            }
         }
     }
 
@@ -452,6 +500,160 @@ impl Default for InvertedIndex {
     }
 }
 
+/// Represents distinct document fields indexed by Nexora.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Field {
+    /// Document title (<title> tag) - typically high semantic density.
+    Title,
+    /// Document body (main textual content).
+    Body,
+    /// Inbound hyperlink anchor text (<a href="...">anchor text</a>) pointing to this document.
+    Anchor,
+}
+
+impl Field {
+    /// Returns the canonical lowercase string identifier of the field.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Field::Title => "title",
+            Field::Body => "body",
+            Field::Anchor => "anchor",
+        }
+    }
+
+    /// Parses a field from a string identifier (case-insensitive).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "title" => Some(Field::Title),
+            "body" | "text" | "content" => Some(Field::Body),
+            "anchor" | "links" | "inlink" => Some(Field::Anchor),
+            _ => None,
+        }
+    }
+}
+
+/// Multi-field inverted index that organizes document fields into distinct
+/// sub-indices (Title, Body, Anchor text) to support BM25F ranking and field-targeted search.
+#[derive(Debug, Clone)]
+pub struct MultiFieldIndex {
+    /// Maps each field to its corresponding InvertedIndex
+    fields: HashMap<Field, InvertedIndex>,
+    /// Global set of distinct DocIds present in this multi-field collection
+    all_doc_ids: HashSet<DocId>,
+    /// Shared text analyzer
+    analyzer: Analyzer,
+}
+
+impl MultiFieldIndex {
+    /// Creates a new MultiFieldIndex with default analyzer and pre-initialized fields.
+    pub fn new() -> Self {
+        Self::with_analyzer(Analyzer::new())
+    }
+
+    /// Creates a new MultiFieldIndex with a custom analyzer.
+    pub fn with_analyzer(analyzer: Analyzer) -> Self {
+        let mut fields = HashMap::new();
+        fields.insert(Field::Title, InvertedIndex::with_analyzer(analyzer.clone()));
+        fields.insert(Field::Body, InvertedIndex::with_analyzer(analyzer.clone()));
+        fields.insert(Field::Anchor, InvertedIndex::with_analyzer(analyzer.clone()));
+
+        Self {
+            fields,
+            all_doc_ids: HashSet::new(),
+            analyzer,
+        }
+    }
+
+    /// Indexes a complete document across all standard fields.
+    pub fn add_document(&mut self, doc_id: DocId, title: &str, body: &str, anchor: &str) {
+        self.all_doc_ids.insert(doc_id);
+        if !title.is_empty() {
+            self.fields.get_mut(&Field::Title).unwrap().add_document(doc_id, title);
+        }
+        if !body.is_empty() {
+            self.fields.get_mut(&Field::Body).unwrap().add_document(doc_id, body);
+        }
+        if !anchor.is_empty() {
+            self.fields.get_mut(&Field::Anchor).unwrap().add_document(doc_id, anchor);
+        }
+    }
+
+    /// Adds text to a specific field of a document.
+    pub fn add_field_text(&mut self, doc_id: DocId, field: Field, text: &str) {
+        self.all_doc_ids.insert(doc_id);
+        if !text.is_empty() {
+            self.fields
+                .entry(field)
+                .or_insert_with(|| InvertedIndex::with_analyzer(self.analyzer.clone()))
+                .add_document(doc_id, text);
+        }
+    }
+
+    /// Appends anchor text to a document (useful when accumulating inbound link anchors from web crawls).
+    pub fn append_anchor_text(&mut self, doc_id: DocId, anchor_text: &str) {
+        if anchor_text.trim().is_empty() {
+            return;
+        }
+        self.all_doc_ids.insert(doc_id);
+        self.fields
+            .get_mut(&Field::Anchor)
+            .unwrap()
+            .append_document(doc_id, anchor_text);
+    }
+
+    /// Returns the total number of unique documents indexed across all fields.
+    pub fn total_documents(&self) -> usize {
+        self.all_doc_ids.len()
+    }
+
+    /// Returns a reference to the InvertedIndex for a specific field.
+    pub fn get_field_index(&self, field: Field) -> Option<&InvertedIndex> {
+        self.fields.get(&field)
+    }
+
+    /// Returns a mutable reference to the InvertedIndex for a specific field.
+    pub fn get_field_index_mut(&mut self, field: Field) -> Option<&mut InvertedIndex> {
+        self.fields.get_mut(&field)
+    }
+
+    /// Returns the term count for a document in a specific field, or 0 if missing.
+    pub fn field_doc_length(&self, field: Field, doc_id: DocId) -> u32 {
+        self.fields
+            .get(&field)
+            .and_then(|idx| idx.doc_length(doc_id))
+            .unwrap_or(0)
+    }
+
+    /// Computes the average document length for a specific field across documents in that field.
+    pub fn average_field_length(&self, field: Field) -> f64 {
+        self.fields
+            .get(&field)
+            .map(|idx| idx.average_doc_length())
+            .unwrap_or(0.0)
+    }
+
+    /// Returns a reference to the analyzer.
+    pub fn analyzer(&self) -> &Analyzer {
+        &self.analyzer
+    }
+
+    /// Returns all registered document identifiers.
+    pub fn all_doc_ids(&self) -> &HashSet<DocId> {
+        &self.all_doc_ids
+    }
+
+    /// Returns the standard fields supported.
+    pub fn standard_fields() -> [Field; 3] {
+        [Field::Title, Field::Body, Field::Anchor]
+    }
+}
+
+impl Default for MultiFieldIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,4 +763,52 @@ mod tests {
         assert!(index.average_doc_length() > 0.0);
         assert_eq!(index.doc_length(0), Some(9)); // 9 words in doc 0
     }
+
+    #[test]
+    fn test_append_document() {
+        let mut index = InvertedIndex::new();
+        index.add_document(0, "rust search");
+        assert_eq!(index.doc_length(0), Some(2));
+        assert_eq!(index.get_postings("rust").unwrap()[0].positions, vec![0]);
+        assert_eq!(index.get_postings("search").unwrap()[0].positions, vec![1]);
+
+        // Append more text to doc 0
+        index.append_document(0, "engine ranking rust");
+        assert_eq!(index.doc_length(0), Some(5)); // 2 + 3 = 5
+        let rust_posting = &index.get_postings("rust").unwrap()[0];
+        assert_eq!(rust_posting.term_frequency, 2);
+        assert_eq!(rust_posting.positions, vec![0, 4]); // 2 + 2 = 4
+
+        let engine_posting = &index.get_postings("engin").unwrap()[0];
+        assert_eq!(engine_posting.positions, vec![2]);
+    }
+
+    #[test]
+    fn test_multi_field_index() {
+        let mut multi = MultiFieldIndex::new();
+        multi.add_document(0, "Rust Programming", "Learn fast memory safety", "rust language");
+        multi.add_document(1, "Python Tutorial", "Easy dynamic scripting", "python code");
+
+        assert_eq!(multi.total_documents(), 2);
+        assert_eq!(multi.field_doc_length(Field::Title, 0), 2);
+        assert_eq!(multi.field_doc_length(Field::Body, 0), 4);
+        assert_eq!(multi.field_doc_length(Field::Anchor, 0), 2);
+
+        // Append anchor text
+        multi.append_anchor_text(0, "systems language");
+        assert_eq!(multi.field_doc_length(Field::Anchor, 0), 4);
+
+        // Verify postings in anchor field
+        let anchor_idx = multi.get_field_index(Field::Anchor).unwrap();
+        let matches = anchor_idx.search_term("system");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].doc_id, 0);
+
+        // Title search
+        let title_idx = multi.get_field_index(Field::Title).unwrap();
+        let matches = title_idx.search_term("rust");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].doc_id, 0);
+    }
 }
+

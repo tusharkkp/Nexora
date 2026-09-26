@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::index::{DocId, InvertedIndex};
+use crate::index::{DocId, Field, InvertedIndex, MultiFieldIndex};
 
 /// Hyperparameters for the Okapi BM25 ranking function.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -171,6 +171,216 @@ pub fn rank_bm25_with_pagerank(
     results
 }
 
+/// Configuration parameters for an individual field in BM25F ranking.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FieldConfig {
+    /// Field importance weight (w_f).
+    /// Typically: Title = 3.0 to 5.0, Body = 1.0, Anchor = 2.0 to 3.0.
+    pub weight: f64,
+    /// Field length normalization parameter (b_f) in range [0.0, 1.0].
+    /// 1.0 applies full length penalization; 0.0 disables length penalization.
+    pub b: f64,
+}
+
+impl FieldConfig {
+    /// Creates a new field configuration.
+    pub fn new(weight: f64, b: f64) -> Self {
+        Self { weight, b }
+    }
+}
+
+/// Hyperparameters for multi-field BM25F ranking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BM25FParams {
+    /// Controls global term frequency saturation.
+    /// Standard baseline: 1.2 (typical range 1.2 - 2.0).
+    pub k1: f64,
+    /// Per-field weights and length normalization factors.
+    pub field_configs: HashMap<Field, FieldConfig>,
+}
+
+impl Default for BM25FParams {
+    fn default() -> Self {
+        let mut field_configs = HashMap::new();
+        // Title matches are concise and high-signal -> high weight (4.0), moderate b (0.5)
+        field_configs.insert(Field::Title, FieldConfig::new(4.0, 0.5));
+        // Body matches are verbose -> standard weight (1.0), standard b (0.75)
+        field_configs.insert(Field::Body, FieldConfig::new(1.0, 0.75));
+        // Anchor text represents external citations -> strong weight (2.5), b (0.6)
+        field_configs.insert(Field::Anchor, FieldConfig::new(2.5, 0.6));
+
+        Self {
+            k1: 1.2,
+            field_configs,
+        }
+    }
+}
+
+impl BM25FParams {
+    /// Sets or overrides the configuration for a specific field.
+    pub fn set_field(&mut self, field: Field, weight: f64, b: f64) -> &mut Self {
+        self.field_configs.insert(field, FieldConfig::new(weight, b));
+        self
+    }
+}
+
+/// Scores all matching documents across multiple fields (Title, Body, Anchor) using BM25F.
+///
+/// In BM25F, field term frequencies are length-normalized and linearly combined
+/// *before* applying the non-linear saturation curve:
+///
+/// tf_tilde(t, d) = sum_{f in fields} ( w_f * tf(t, d, f) / (1 - b_f + b_f * (len(d, f) / avg_len_f)) )
+/// Score(d, Q) = sum_{t in Q} ( IDF(t) * ( tf_tilde(t, d) / (k1 + tf_tilde(t, d)) ) )
+pub fn rank_bm25f(
+    multi_index: &MultiFieldIndex,
+    query: &str,
+    params: &BM25FParams,
+) -> Vec<ScoredDocument> {
+    let total_docs = multi_index.total_documents();
+    if total_docs == 0 {
+        return Vec::new();
+    }
+
+    let query_terms = multi_index.analyzer().analyze(query);
+    if query_terms.is_empty() {
+        return Vec::new();
+    }
+
+    // Precompute average field lengths
+    let mut avg_lens: HashMap<Field, f64> = HashMap::new();
+    for field in MultiFieldIndex::standard_fields() {
+        avg_lens.insert(field, multi_index.average_field_length(field));
+    }
+
+    let mut scores: HashMap<DocId, f64> = HashMap::new();
+    let mut seen_terms = HashSet::new();
+
+    for term in query_terms {
+        if !seen_terms.insert(term.text.clone()) {
+            continue;
+        }
+
+        // Map: DocId -> Map<Field, term_frequency>
+        let mut doc_field_tfs: HashMap<DocId, HashMap<Field, u32>> = HashMap::new();
+
+        for &field in &MultiFieldIndex::standard_fields() {
+            if let Some(index) = multi_index.get_field_index(field) {
+                if let Some(postings) = index.get_postings(&term.text) {
+                    for posting in postings {
+                        doc_field_tfs
+                            .entry(posting.doc_id)
+                            .or_default()
+                            .insert(field, posting.term_frequency);
+                    }
+                }
+            }
+        }
+
+        if doc_field_tfs.is_empty() {
+            continue;
+        }
+
+        // Collection-level document frequency: number of documents containing term in ANY field
+        let doc_freq = doc_field_tfs.len();
+        let term_idf = idf(total_docs, doc_freq);
+
+        for (doc_id, field_tfs) in doc_field_tfs {
+            let mut tf_tilde = 0.0;
+
+            for &field in &MultiFieldIndex::standard_fields() {
+                let config = params
+                    .field_configs
+                    .get(&field)
+                    .copied()
+                    .unwrap_or_else(|| FieldConfig::new(1.0, 0.75));
+
+                if let Some(&tf) = field_tfs.get(&field) {
+                    let doc_len = multi_index.field_doc_length(field, doc_id) as f64;
+                    let avg_len = avg_lens.get(&field).copied().unwrap_or(0.0);
+
+                    let len_norm = if avg_len > 0.0 {
+                        1.0 - config.b + (config.b * (doc_len / avg_len))
+                    } else {
+                        1.0
+                    };
+                    let len_norm = if len_norm > 0.0 { len_norm } else { 1.0 };
+
+                    let norm_tf = (tf as f64) / len_norm;
+                    tf_tilde += config.weight * norm_tf;
+                }
+            }
+
+            if tf_tilde > 0.0 {
+                let term_score = term_idf * ((tf_tilde * (params.k1 + 1.0)) / (params.k1 + tf_tilde));
+                *scores.entry(doc_id).or_insert(0.0) += term_score;
+            }
+        }
+    }
+
+    let mut ranked_docs: Vec<ScoredDocument> = scores
+        .into_iter()
+        .map(|(doc_id, score)| ScoredDocument { doc_id, score })
+        .collect();
+
+    ranked_docs.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    });
+
+    ranked_docs
+}
+
+/// Hyperparameters for hybrid BM25F ranking combining multi-field relevance and PageRank authority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HybridBM25FParams {
+    /// Multi-field BM25F parameters
+    pub bm25f: BM25FParams,
+    /// Weighting coefficient applied to PageRank authority (default: 1.0)
+    pub alpha: f64,
+    /// Internal scaling factor for the logarithmic PageRank boost (default: 100.0)
+    pub beta: f64,
+}
+
+impl Default for HybridBM25FParams {
+    fn default() -> Self {
+        Self {
+            bm25f: BM25FParams::default(),
+            alpha: 1.0,
+            beta: 100.0,
+        }
+    }
+}
+
+/// Computes combined ranking combining BM25F multi-field textual matching and PageRank link authority.
+///
+/// Formula:
+/// CombinedScore(d, q) = BM25F(d, q) + alpha * ln(1.0 + beta * PR(d))
+pub fn rank_bm25f_with_pagerank(
+    multi_index: &MultiFieldIndex,
+    query: &str,
+    pagerank_scores: &HashMap<DocId, f64>,
+    params: &HybridBM25FParams,
+) -> Vec<ScoredDocument> {
+    let mut results = rank_bm25f(multi_index, query, &params.bm25f);
+
+    for doc in &mut results {
+        let pr = pagerank_scores.get(&doc.doc_id).copied().unwrap_or(0.0);
+        let authority_boost = params.alpha * (1.0 + params.beta * pr).ln();
+        doc.score += authority_boost;
+    }
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    });
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +476,63 @@ mod tests {
         // Doc 1 wins due to PageRank authority boost!
         assert_eq!(results[0].doc_id, 1);
         assert_eq!(results[1].doc_id, 0);
+        assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn test_bm25f_title_boost() {
+        let mut multi = MultiFieldIndex::new();
+        // Doc 0: Has "rust" in title, none in body
+        multi.add_document(0, "Rust Programming", "Learn systems programming and safety", "");
+        // Doc 1: Has "rust" 3 times in body, but title is unrelated
+        multi.add_document(
+            1,
+            "Gardening Tools",
+            "Metal tools get rust quickly. Prevent rust by cleaning iron rust.",
+            "",
+        );
+
+        let params = BM25FParams::default(); // Title weight 4.0, Body weight 1.0
+        let results = rank_bm25f(&multi, "rust", &params);
+
+        assert_eq!(results.len(), 2);
+        // Doc 0 must win due to title field weight!
+        assert_eq!(results[0].doc_id, 0);
+        assert_eq!(results[1].doc_id, 1);
+        assert!(results[0].score > results[1].score);
+    }
+
+    #[test]
+    fn test_bm25f_anchor_boost() {
+        let mut multi = MultiFieldIndex::new();
+        // Doc 0: Has "search" in body
+        multi.add_document(0, "Index Page", "General web search tools", "");
+        // Doc 1: Has "search engine" only in anchor text from incoming links
+        multi.add_document(1, "Project Nexora", "High performance fast software", "");
+        multi.append_anchor_text(1, "best rust search engine");
+
+        let params = BM25FParams::default();
+        let results = rank_bm25f(&multi, "search engine", &params);
+
+        // Doc 1 matches both terms in anchor text, doc 0 only matches "search" in body
+        assert_eq!(results[0].doc_id, 1);
+    }
+
+    #[test]
+    fn test_bm25f_with_pagerank() {
+        let mut multi = MultiFieldIndex::new();
+        multi.add_document(0, "Search Engines", "Information retrieval system", "");
+        multi.add_document(1, "Search Engines", "Information retrieval system", "");
+
+        let mut pr_scores = HashMap::new();
+        pr_scores.insert(0, 0.05);
+        pr_scores.insert(1, 0.85);
+
+        let params = HybridBM25FParams::default();
+        let results = rank_bm25f_with_pagerank(&multi, "search engines", &pr_scores, &params);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].doc_id, 1); // Doc 1 boosted by PageRank
         assert!(results[0].score > results[1].score);
     }
 }

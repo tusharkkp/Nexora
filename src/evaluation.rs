@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::index::{DocId, InvertedIndex};
-use crate::ranking::{rank_bm25_with_pagerank, BM25Params, HybridRankingParams};
+use crate::index::{DocId, InvertedIndex, MultiFieldIndex};
+use crate::ranking::{
+    rank_bm25_with_pagerank, rank_bm25f, BM25FParams, BM25Params, HybridRankingParams,
+};
 
 
 /// A single benchmark evaluation query paired with ground-truth relevance assessments.
@@ -215,6 +217,49 @@ pub fn evaluate_hybrid_pagerank(
     for qj in benchmark {
         let scored_docs =
             rank_bm25_with_pagerank(index, &qj.query, pagerank_scores, params);
+        let retrieved_ids: Vec<DocId> = scored_docs.iter().map(|s| s.doc_id).collect();
+        let relevant_set = qj.relevant_doc_ids();
+
+        total_p += precision_at_k(&retrieved_ids, &relevant_set, k);
+        total_r += recall_at_k(&retrieved_ids, &relevant_set, k);
+        total_rr += reciprocal_rank(&retrieved_ids, &relevant_set);
+        total_ndcg += ndcg_at_k(&retrieved_ids, &qj.relevance, k);
+    }
+
+    let n = benchmark.len() as f64;
+    BenchmarkMetrics {
+        k,
+        mean_precision: total_p / n,
+        mean_recall: total_r / n,
+        mean_reciprocal_rank: total_rr / n,
+        mean_ndcg: total_ndcg / n,
+    }
+}
+
+/// Evaluates multi-field BM25F ranking on a benchmark suite of queries and ground-truth judgments.
+pub fn evaluate_bm25f(
+    multi_index: &MultiFieldIndex,
+    benchmark: &[QueryJudgment],
+    params: &BM25FParams,
+    k: usize,
+) -> BenchmarkMetrics {
+    if benchmark.is_empty() {
+        return BenchmarkMetrics {
+            k,
+            mean_precision: 0.0,
+            mean_recall: 0.0,
+            mean_reciprocal_rank: 0.0,
+            mean_ndcg: 0.0,
+        };
+    }
+
+    let mut total_p = 0.0;
+    let mut total_r = 0.0;
+    let mut total_rr = 0.0;
+    let mut total_ndcg = 0.0;
+
+    for qj in benchmark {
+        let scored_docs = rank_bm25f(multi_index, &qj.query, params);
         let retrieved_ids: Vec<DocId> = scored_docs.iter().map(|s| s.doc_id).collect();
         let relevant_set = qj.relevant_doc_ids();
 
@@ -453,6 +498,26 @@ mod tests {
         // PageRank delivers 100% lift in MRR and significant lift in NDCG@2!
         assert_eq!(comparison.mrr_lift(), 100.0);
         assert!(comparison.ndcg_lift() > 0.0);
+    }
+
+    #[test]
+    fn test_bm25f_benchmark_evaluation() {
+        let mut multi = MultiFieldIndex::new();
+        multi.add_document(0, "Rust Programming", "Language syntax and memory safety", "");
+        multi.add_document(
+            1,
+            "Gardening Guide",
+            "Tools get rust on them when wet. Iron rust can damage tools rust.",
+            "",
+        );
+
+        let benchmark = vec![QueryJudgment::graded("rust", &[(0, 3), (1, 0)])];
+        let params = BM25FParams::default();
+        let metrics = evaluate_bm25f(&multi, &benchmark, &params, 1);
+
+        assert_eq!(metrics.mean_precision, 1.0);
+        assert_eq!(metrics.mean_reciprocal_rank, 1.0);
+        assert_eq!(metrics.mean_ndcg, 1.0);
     }
 }
 
