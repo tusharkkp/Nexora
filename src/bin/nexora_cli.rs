@@ -7,7 +7,7 @@ use nexora::{
     compute_pagerank, generate_snippet, load_from_file, load_metadata_from_file,
     rank_bm25_with_pagerank, save_metadata_to_file, save_to_file, CrawlConfig, Crawler,
     DocId, DocumentMetadata, HighlightFormat, HttpFetcher, HybridRankingParams, InvertedIndex,
-    PageRankParams, SnippetConfig, UrlFrontier, WebGraph,
+    PageRankParams, SnippetConfig, SpellChecker, UrlFrontier, WebGraph,
 };
 
 /// In-memory representation of an indexed document with optional URL and link authority.
@@ -463,10 +463,43 @@ fn handle_bm25_search(
     );
 
     if results.is_empty() {
-        println!("No matching documents found.");
+        println!("No matching documents found for '{}'.", query);
+
+        let spell_checker = SpellChecker::from_documents(
+            doc_store.values().map(|d| format!("{} {}", d.title, d.body)),
+        );
+
+        if let Some(suggestion) = spell_checker.suggest_query(query) {
+            println!("\n💡 Did you mean: \x1b[1m\x1b[36m{}\x1b[0m?", suggestion);
+
+            let corrected_results =
+                rank_bm25_with_pagerank(index, &suggestion, &pr_map, &hybrid_params);
+            if !corrected_results.is_empty() {
+                println!(
+                    "\n--- Showing Top Results for: '{}' ({} matches) ---",
+                    suggestion,
+                    corrected_results.len()
+                );
+                render_scored_results(
+                    &corrected_results,
+                    doc_store,
+                    &suggestion,
+                    index.analyzer(),
+                );
+            }
+        }
         return;
     }
 
+    render_scored_results(&results, doc_store, query, index.analyzer());
+}
+
+fn render_scored_results(
+    results: &[nexora::ScoredDocument],
+    doc_store: &HashMap<DocId, DocumentEntry>,
+    query: &str,
+    analyzer: &nexora::Analyzer,
+) {
     let snippet_cfg = SnippetConfig {
         max_chars: 160,
         format: HighlightFormat::Ansi,
@@ -474,7 +507,7 @@ fn handle_bm25_search(
 
     for (rank, scored_doc) in results.iter().enumerate() {
         if let Some(doc) = doc_store.get(&scored_doc.doc_id) {
-            let snippet = generate_snippet(&doc.body, query, index.analyzer(), &snippet_cfg);
+            let snippet = generate_snippet(&doc.body, query, analyzer, &snippet_cfg);
 
             if let Some(ref url) = doc.url {
                 println!(

@@ -6,6 +6,7 @@ pub mod graph;
 pub mod index;
 pub mod ranking;
 pub mod snippet;
+pub mod spelling;
 pub mod stemmer;
 pub mod storage;
 pub mod tokenizer;
@@ -30,6 +31,7 @@ pub use ranking::{
     idf, rank_bm25, rank_bm25_with_pagerank, BM25Params, HybridRankingParams, ScoredDocument,
 };
 pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};
+pub use spelling::{damerau_levenshtein, SpellChecker, Suggestion};
 pub use stemmer::stem;
 pub use storage::{
     load_from_file, load_metadata_from_file, save_metadata_to_file, save_to_file, DocumentMetadata,
