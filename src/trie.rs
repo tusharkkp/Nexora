@@ -267,21 +267,171 @@ impl PrefixTrie {
         trie
     }
 
-    /// Constructs a `PrefixTrie` from raw document texts, preserving full un-stemmed natural words.
+    /// Records an executed query into the autocomplete trie, boosting its popularity frequency.
+    pub fn record_query(&mut self, query: &str) {
+        let clean = query.trim().to_lowercase();
+        if clean.len() >= 2 && !clean.starts_with(':') {
+            // Boost frequency by 5 for real executed search queries
+            self.insert(&clean, 5, 1);
+        }
+    }
+
+    /// Constructs a `PrefixTrie` from raw document texts, extracting unigrams and 2-to-3-word phrases.
     pub fn from_documents<I, S>(documents: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::from_documents_with_phrases(documents, 3)
+    }
+
+    /// Constructs a `PrefixTrie` extracting unigrams up to `max_n`-gram phrases.
+    pub fn from_documents_with_phrases<I, S>(documents: I, max_n: usize) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let mut trie = Self::new();
         for doc in documents {
-            let tokens = tokenize(doc.as_ref());
-            for token in tokens {
+            let text = doc.as_ref();
+            let tokens = tokenize(text);
+            if tokens.is_empty() {
+                continue;
+            }
+
+            // 1. Insert unigrams
+            for token in &tokens {
                 if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit()) {
                     continue;
                 }
                 if token.text.len() >= 2 {
                     trie.insert(&token.text, 1, 1);
+                }
+            }
+
+            // 2. Extract contiguous n-gram phrases (n = 2..=max_n) respecting sentence boundaries
+            for n in 2..=max_n {
+                for window in tokens.windows(n) {
+                    let mut cross_boundary = false;
+                    for pair in window.windows(2) {
+                        let prev_end = pair[0].end_offset;
+                        let next_start = pair[1].start_offset;
+                        if next_start > prev_end && next_start <= text.len() {
+                            let gap = &text[prev_end..next_start];
+                            if gap.chars().any(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+                                cross_boundary = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if cross_boundary {
+                        continue;
+                    }
+
+                    let all_valid = window.iter().all(|t| {
+                        !t.text.starts_with("http")
+                            && !t.text.chars().all(|c| c.is_ascii_digit())
+                            && t.text.len() >= 2
+                    });
+
+                    if all_valid {
+                        let phrase = window
+                            .iter()
+                            .map(|t| t.text.as_str())
+                            .collect::<Vec<&str>>()
+                            .join(" ");
+                        trie.insert(&phrase, 1, 1);
+                    }
+                }
+            }
+        }
+        trie
+    }
+
+    /// Constructs a `PrefixTrie` from corpus entries `(title, body)`.
+    ///
+    /// Phrases originating from titles receive higher frequency weighting (3x)
+    /// because titles are concise, high-salience query targets.
+    pub fn from_corpus_entries<I, T, B>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (T, B)>,
+        T: AsRef<str>,
+        B: AsRef<str>,
+    {
+        let mut trie = Self::new();
+        for (title, body) in entries {
+            let title_text = title.as_ref();
+            let body_text = body.as_ref();
+
+            // Index title unigrams and phrases with weight = 3
+            let title_tokens = tokenize(title_text);
+            for token in &title_tokens {
+                if token.text.len() >= 2
+                    && !token.text.starts_with("http")
+                    && !token.text.chars().all(|c| c.is_ascii_digit())
+                {
+                    trie.insert(&token.text, 3, 1);
+                }
+            }
+            for n in 2..=4 {
+                for window in title_tokens.windows(n) {
+                    let all_valid = window.iter().all(|t| {
+                        !t.text.starts_with("http")
+                            && !t.text.chars().all(|c| c.is_ascii_digit())
+                            && t.text.len() >= 2
+                    });
+                    if all_valid {
+                        let phrase = window
+                            .iter()
+                            .map(|t| t.text.as_str())
+                            .collect::<Vec<&str>>()
+                            .join(" ");
+                        trie.insert(&phrase, 3, 1);
+                    }
+                }
+            }
+
+            // Index body unigrams and phrases with weight = 1
+            let body_tokens = tokenize(body_text);
+            for token in &body_tokens {
+                if token.text.len() >= 2
+                    && !token.text.starts_with("http")
+                    && !token.text.chars().all(|c| c.is_ascii_digit())
+                {
+                    trie.insert(&token.text, 1, 1);
+                }
+            }
+            for n in 2..=3 {
+                for window in body_tokens.windows(n) {
+                    let mut cross_boundary = false;
+                    for pair in window.windows(2) {
+                        let prev_end = pair[0].end_offset;
+                        let next_start = pair[1].start_offset;
+                        if next_start > prev_end && next_start <= body_text.len() {
+                            let gap = &body_text[prev_end..next_start];
+                            if gap.chars().any(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+                                cross_boundary = true;
+                                break;
+                            }
+                        }
+                    }
+                    if cross_boundary {
+                        continue;
+                    }
+                    let all_valid = window.iter().all(|t| {
+                        !t.text.starts_with("http")
+                            && !t.text.chars().all(|c| c.is_ascii_digit())
+                            && t.text.len() >= 2
+                    });
+                    if all_valid {
+                        let phrase = window
+                            .iter()
+                            .map(|t| t.text.as_str())
+                            .collect::<Vec<&str>>()
+                            .join(" ");
+                        trie.insert(&phrase, 1, 1);
+                    }
                 }
             }
         }
@@ -396,10 +546,45 @@ mod tests {
         assert!(trie.contains("rust"));
         assert!(trie.contains("rustaceans"));
 
-        let suggestions = trie.suggest("rust", 5);
+        let suggestions = trie.suggest("rust", 10);
         assert_eq!(suggestions[0].term, "rust");
         assert_eq!(suggestions[0].term_frequency, 2);
-        assert_eq!(suggestions[1].term, "rustaceans");
-        assert_eq!(suggestions[1].term_frequency, 1);
+        let terms: Vec<String> = suggestions.into_iter().map(|s| s.term).collect();
+        assert!(terms.contains(&"rustaceans".to_string()));
+        assert!(terms.contains(&"rust programming".to_string()));
+    }
+
+    #[test]
+    fn test_multi_word_phrase_suggestions() {
+        let docs = vec![
+            "Search engines use an inverted index for fast lookup.",
+            "Search engine architecture is complex and scalable.",
+        ];
+        let trie = PrefixTrie::from_documents(docs);
+
+        // Substring "search en" should match "search engines" and "search engine"
+        let suggestions = trie.suggest("search en", 5);
+        assert!(!suggestions.is_empty());
+        let terms: Vec<String> = suggestions.into_iter().map(|s| s.term).collect();
+        assert!(terms.contains(&"search engines".to_string()) || terms.contains(&"search engine".to_string()));
+
+        // Exact phrase prefix "inverted in"
+        let inv_suggestions = trie.suggest("inverted in", 5);
+        assert!(!inv_suggestions.is_empty());
+        assert_eq!(inv_suggestions[0].term, "inverted index");
+    }
+
+    #[test]
+    fn test_record_query_boost() {
+        let docs = vec!["Rust programming language"];
+        let mut trie = PrefixTrie::from_documents(docs);
+
+        // Record a user search query
+        trie.record_query("rust web framework");
+        assert!(trie.contains("rust web framework"));
+
+        let suggestions = trie.suggest("rust w", 5);
+        assert_eq!(suggestions[0].term, "rust web framework");
+        assert_eq!(suggestions[0].term_frequency, 5); // boosted
     }
 }
