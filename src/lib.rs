@@ -22,8 +22,9 @@ pub use crawler::{
     HttpFetcherConfig, MockFetcher, PageFetcher, ParsedUrl, RobotsTxt, UrlFrontier,
 };
 pub use evaluation::{
-    dcg_at_k, evaluate_bm25, idcg_at_k, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank,
-    BenchmarkMetrics, QueryJudgment,
+    compare_rankers, dcg_at_k, evaluate_bm25, evaluate_hybrid_pagerank, idcg_at_k, ndcg_at_k,
+    precision_at_k, recall_at_k, reciprocal_rank, BenchmarkComparison, BenchmarkMetrics,
+    QueryJudgment,
 };
 pub use graph::{compute_pagerank, PageRankParams, WebGraph};
 pub use index::{DocId, InvertedIndex, Posting};

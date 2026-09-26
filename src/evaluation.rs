@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::index::{DocId, InvertedIndex};
-use crate::ranking::BM25Params;
+use crate::ranking::{rank_bm25_with_pagerank, BM25Params, HybridRankingParams};
+
 
 /// A single benchmark evaluation query paired with ground-truth relevance assessments.
 #[derive(Debug, Clone)]
@@ -188,6 +189,147 @@ pub fn evaluate_bm25(
     }
 }
 
+/// Runs a search evaluation benchmark using Hybrid BM25 + PageRank ranking.
+pub fn evaluate_hybrid_pagerank(
+    index: &InvertedIndex,
+    pagerank_scores: &HashMap<DocId, f64>,
+    benchmark: &[QueryJudgment],
+    k: usize,
+    params: &HybridRankingParams,
+) -> BenchmarkMetrics {
+    if benchmark.is_empty() {
+        return BenchmarkMetrics {
+            k,
+            mean_precision: 0.0,
+            mean_recall: 0.0,
+            mean_reciprocal_rank: 0.0,
+            mean_ndcg: 0.0,
+        };
+    }
+
+    let mut total_p = 0.0;
+    let mut total_r = 0.0;
+    let mut total_rr = 0.0;
+    let mut total_ndcg = 0.0;
+
+    for qj in benchmark {
+        let scored_docs =
+            rank_bm25_with_pagerank(index, &qj.query, pagerank_scores, params);
+        let retrieved_ids: Vec<DocId> = scored_docs.iter().map(|s| s.doc_id).collect();
+        let relevant_set = qj.relevant_doc_ids();
+
+        total_p += precision_at_k(&retrieved_ids, &relevant_set, k);
+        total_r += recall_at_k(&retrieved_ids, &relevant_set, k);
+        total_rr += reciprocal_rank(&retrieved_ids, &relevant_set);
+        total_ndcg += ndcg_at_k(&retrieved_ids, &qj.relevance, k);
+    }
+
+    let n = benchmark.len() as f64;
+    BenchmarkMetrics {
+        k,
+        mean_precision: total_p / n,
+        mean_recall: total_r / n,
+        mean_reciprocal_rank: total_rr / n,
+        mean_ndcg: total_ndcg / n,
+    }
+}
+
+/// Side-by-side comparison of baseline BM25 vs Hybrid BM25 + PageRank ranking models.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchmarkComparison {
+    pub k: usize,
+    pub bm25: BenchmarkMetrics,
+    pub hybrid: BenchmarkMetrics,
+}
+
+impl BenchmarkComparison {
+    /// Relative percentage lift in Precision@K: ((Hybrid - BM25) / BM25) * 100%
+    pub fn precision_lift(&self) -> f64 {
+        Self::calc_lift(self.bm25.mean_precision, self.hybrid.mean_precision)
+    }
+
+    /// Relative percentage lift in Recall@K
+    pub fn recall_lift(&self) -> f64 {
+        Self::calc_lift(self.bm25.mean_recall, self.hybrid.mean_recall)
+    }
+
+    /// Relative percentage lift in Mean Reciprocal Rank (MRR)
+    pub fn mrr_lift(&self) -> f64 {
+        Self::calc_lift(
+            self.bm25.mean_reciprocal_rank,
+            self.hybrid.mean_reciprocal_rank,
+        )
+    }
+
+    /// Relative percentage lift in NDCG@K
+    pub fn ndcg_lift(&self) -> f64 {
+        Self::calc_lift(self.bm25.mean_ndcg, self.hybrid.mean_ndcg)
+    }
+
+    fn calc_lift(baseline: f64, candidate: f64) -> f64 {
+        if baseline <= 1e-9 {
+            if candidate > 1e-9 {
+                100.0
+            } else {
+                0.0
+            }
+        } else {
+            ((candidate - baseline) / baseline) * 100.0
+        }
+    }
+
+    /// Formats the side-by-side comparison as an ASCII / Markdown table.
+    pub fn format_table(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "| Metric (@{}) | BM25 Baseline | BM25 + PageRank | Relative Lift |\n",
+            self.k
+        ));
+        out.push_str("|:-------------|:--------------|:----------------|:--------------|\n");
+        out.push_str(&format!(
+            "| Precision@{}  | {:.4}         | {:.4}           | {:+.2}%        |\n",
+            self.k,
+            self.bm25.mean_precision,
+            self.hybrid.mean_precision,
+            self.precision_lift()
+        ));
+        out.push_str(&format!(
+            "| Recall@{}     | {:.4}         | {:.4}           | {:+.2}%        |\n",
+            self.k,
+            self.bm25.mean_recall,
+            self.hybrid.mean_recall,
+            self.recall_lift()
+        ));
+        out.push_str(&format!(
+            "| MRR          | {:.4}         | {:.4}           | {:+.2}%        |\n",
+            self.bm25.mean_reciprocal_rank,
+            self.hybrid.mean_reciprocal_rank,
+            self.mrr_lift()
+        ));
+        out.push_str(&format!(
+            "| NDCG@{}       | {:.4}         | {:.4}           | {:+.2}%        |\n",
+            self.k,
+            self.bm25.mean_ndcg,
+            self.hybrid.mean_ndcg,
+            self.ndcg_lift()
+        ));
+        out
+    }
+}
+
+/// Evaluates both baseline BM25 and Hybrid BM25 + PageRank, producing a side-by-side comparison.
+pub fn compare_rankers(
+    index: &InvertedIndex,
+    pagerank_scores: &HashMap<DocId, f64>,
+    benchmark: &[QueryJudgment],
+    k: usize,
+    hybrid_params: &HybridRankingParams,
+) -> BenchmarkComparison {
+    let bm25 = evaluate_bm25(index, benchmark, k, &hybrid_params.bm25);
+    let hybrid = evaluate_hybrid_pagerank(index, pagerank_scores, benchmark, k, hybrid_params);
+    BenchmarkComparison { k, bm25, hybrid }
+}
+
 // -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
@@ -262,4 +404,55 @@ mod tests {
         assert_eq!(metrics.mean_reciprocal_rank, 1.0); // Rank 1 in both queries
         assert!(metrics.mean_ndcg > 0.90);
     }
+
+    #[test]
+    fn test_comparative_benchmark_pagerank_lift() {
+        use crate::graph::{compute_pagerank, PageRankParams, WebGraph};
+
+        let mut index = InvertedIndex::new();
+        // Doc 0: Keyword-stuffed page, but unlinked
+        index.add_document(0, "rust systems programming rust systems programming");
+        // Doc 1: Authoritative official guide
+        index.add_document(1, "rust systems programming language overview");
+        // Docs 2, 3, 4: Peer sites
+        index.add_document(2, "community guide");
+        index.add_document(3, "developer resources");
+        index.add_document(4, "curated crates");
+
+        // Web graph: Docs 2, 3, 4 all link to Doc 1 (Authority)
+        let mut graph = WebGraph::new();
+        graph.add_edge(2, 1);
+        graph.add_edge(3, 1);
+        graph.add_edge(4, 1);
+        graph.add_edge(1, 2);
+
+        let pr_scores = compute_pagerank(&graph, &PageRankParams::default());
+
+        // Ground truth: Doc 1 is the primary authoritative document (grade 3), Doc 0 is grade 1
+        let benchmark = vec![QueryJudgment::graded(
+            "rust systems programming",
+            &[(1, 3), (0, 0)],
+        )];
+
+        let comparison = compare_rankers(
+            &index,
+            &pr_scores,
+            &benchmark,
+            2,
+            &HybridRankingParams::default(),
+        );
+
+        println!("\n{}", comparison.format_table());
+
+        // Under BM25 alone, Doc 0 ranks #1 due to term frequency (MRR = 0.5)
+        assert_eq!(comparison.bm25.mean_reciprocal_rank, 0.5);
+
+        // Under Hybrid BM25 + PageRank, Doc 1 is promoted to #1 (MRR = 1.0)
+        assert_eq!(comparison.hybrid.mean_reciprocal_rank, 1.0);
+
+        // PageRank delivers 100% lift in MRR and significant lift in NDCG@2!
+        assert_eq!(comparison.mrr_lift(), 100.0);
+        assert!(comparison.ndcg_lift() > 0.0);
+    }
 }
+

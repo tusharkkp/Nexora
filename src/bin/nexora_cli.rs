@@ -4,10 +4,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use nexora::{
-    compute_pagerank, generate_snippet, load_from_file, load_metadata_from_file,
-    rank_bm25_with_pagerank, save_metadata_to_file, save_to_file, CrawlConfig, Crawler,
-    DocId, DocumentMetadata, HighlightFormat, HttpFetcher, HybridRankingParams, InvertedIndex,
-    PageRankParams, SnippetConfig, SpellChecker, UrlFrontier, WebGraph,
+    compare_rankers, compute_pagerank, generate_snippet, load_from_file,
+    load_metadata_from_file, rank_bm25_with_pagerank, save_metadata_to_file, save_to_file,
+    CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
+    HybridRankingParams, InvertedIndex, PageRankParams, QueryJudgment, SnippetConfig,
+    SpellChecker, UrlFrontier, WebGraph,
 };
 
 /// In-memory representation of an indexed document with optional URL and link authority.
@@ -201,6 +202,9 @@ fn run_interactive_repl() {
                     }
                 }
             }
+            ":benchmark" | ":eval" => {
+                run_corpus_benchmark(&index, &doc_store);
+            }
             _ => {
                 if let Some(args) = query.strip_prefix(":crawl ") {
                     let parts: Vec<&str> = args.split_whitespace().collect();
@@ -266,11 +270,53 @@ fn print_help() {
     println!("  :and <t1> <t2>              Boolean AND intersection");
     println!("  :or  <t1> <t2>              Boolean OR union");
     println!("  :crawl <url> [N] [out.nex]  Crawl website, calculate PageRank, and save index");
+    println!("  :benchmark                  Run Cranfield evaluation (BM25 vs PageRank comparison)");
     println!("  :save <path>                Persist active index to binary file (.nex v2)");
     println!("  :load <path>                Load index and metadata from disk (.nex)");
     println!("  :stats                      Display index metadata and vocabulary size");
     println!("  :docs                       List all indexed documents");
     println!("  :exit                       Exit the search engine");
+}
+
+fn run_corpus_benchmark(
+    index: &InvertedIndex,
+    doc_store: &HashMap<DocId, DocumentEntry>,
+) {
+    println!("\n--- Running Cranfield Evaluation Benchmark Suite ---");
+
+    let benchmark = vec![
+        QueryJudgment::graded(
+            "rust memory safety",
+            &[(1, 3), (0, 0), (2, 0), (3, 0), (4, 0), (5, 0)],
+        ),
+        QueryJudgment::graded(
+            "inverted index search engine",
+            &[(0, 3), (2, 1), (3, 1), (4, 0), (1, 0), (5, 0)],
+        ),
+        QueryJudgment::graded(
+            "web crawler URL frontier",
+            &[(3, 3), (5, 1), (0, 0), (1, 0), (2, 0), (4, 0)],
+        ),
+        QueryJudgment::graded(
+            "BM25 ranking algorithm",
+            &[(2, 3), (0, 1), (1, 0), (3, 0), (4, 0), (5, 0)],
+        ),
+    ];
+
+    let pr_map: HashMap<DocId, f64> = doc_store
+        .iter()
+        .map(|(&id, d)| (id, d.pagerank))
+        .collect();
+
+    let comparison = compare_rankers(
+        index,
+        &pr_map,
+        &benchmark,
+        3,
+        &HybridRankingParams::default(),
+    );
+
+    println!("\n{}\n", comparison.format_table());
 }
 
 fn execute_crawl(
