@@ -58,6 +58,41 @@ impl InvertedIndex {
         &self.analyzer
     }
 
+    /// Returns a reference to the internal dictionary map.
+    pub fn dictionary(&self) -> &HashMap<String, Vec<Posting>> {
+        &self.dictionary
+    }
+
+    /// Returns a reference to the internal document lengths map.
+    pub fn doc_lengths(&self) -> &HashMap<DocId, u32> {
+        &self.doc_lengths
+    }
+
+    /// Reconstructs an InvertedIndex from raw storage parts.
+    pub fn from_raw_parts(
+        dictionary: HashMap<String, Vec<Posting>>,
+        doc_lengths: HashMap<DocId, u32>,
+        total_documents: usize,
+        analyzer: Analyzer,
+    ) -> Self {
+        Self {
+            dictionary,
+            doc_lengths,
+            total_documents,
+            analyzer,
+        }
+    }
+
+    /// Serializes and saves this index to a binary file at `path`.
+    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), crate::storage::StorageError> {
+        crate::storage::save_to_file(self, path)
+    }
+
+    /// Loads and reconstructs an InvertedIndex from a binary file at `path`.
+    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, crate::storage::StorageError> {
+        crate::storage::load_from_file(path)
+    }
+
     /// Returns the total term count (length) of a specific document.
     pub fn doc_length(&self, doc_id: DocId) -> Option<u32> {
         self.doc_lengths.get(&doc_id).copied()

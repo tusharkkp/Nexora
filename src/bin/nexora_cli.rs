@@ -105,7 +105,29 @@ fn main() {
                 }
             }
             _ => {
-                if let Some(args) = query.strip_prefix(":and ") {
+                if let Some(path) = query.strip_prefix(":save ") {
+                    let path = path.trim();
+                    match index.save_to_file(path) {
+                        Ok(()) => println!("✔ Successfully persisted index to '{}'", path),
+                        Err(e) => println!("✘ Failed to save index: {}", e),
+                    }
+                } else if let Some(path) = query.strip_prefix(":load ") {
+                    let path = path.trim();
+                    let start = Instant::now();
+                    match InvertedIndex::load_from_file(path) {
+                        Ok(loaded) => {
+                            index = loaded;
+                            println!(
+                                "✔ Successfully loaded index from '{}' ({} docs, {} terms) in {:.2?}",
+                                path,
+                                index.total_documents(),
+                                index.vocabulary_size(),
+                                start.elapsed()
+                            );
+                        }
+                        Err(e) => println!("✘ Failed to load index: {}", e),
+                    }
+                } else if let Some(args) = query.strip_prefix(":and ") {
                     handle_boolean_and(&index, &doc_store, args);
                 } else if let Some(args) = query.strip_prefix(":or ") {
                     handle_boolean_or(&index, &doc_store, args);
@@ -126,6 +148,8 @@ fn print_help() {
     println!("  \"<phrase>\"       Exact consecutive phrase search (e.g. '\"inverted index\"')");
     println!("  :and <t1> <t2>   Boolean AND intersection (e.g. ':and crawler frontier')");
     println!("  :or  <t1> <t2>   Boolean OR union (e.g. ':or rust python')");
+    println!("  :save <path>     Persist index to binary file (e.g. ':save index.nex')");
+    println!("  :load <path>     Load index from binary file (e.g. ':load index.nex')");
     println!("  :stats           Display index metadata and vocabulary size");
     println!("  :docs            List all indexed documents");
     println!("  :exit            Exit the search engine");
