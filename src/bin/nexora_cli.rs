@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Instant;
 
-use nexora::{DocId, InvertedIndex};
+use nexora::{generate_snippet, DocId, InvertedIndex, SnippetConfig};
 
 struct CorpusDocument {
     id: DocId,
@@ -176,8 +176,10 @@ fn handle_bm25_search(
         return;
     }
 
+    let snippet_cfg = SnippetConfig::default();
     for (rank, scored_doc) in results.iter().enumerate() {
         let doc = doc_store.get(&scored_doc.doc_id).unwrap();
+        let snippet = generate_snippet(doc.body, query, index.analyzer(), &snippet_cfg);
         println!(
             "{}. [Score: {:.4}] [Doc {}] {}",
             rank + 1,
@@ -185,7 +187,7 @@ fn handle_bm25_search(
             doc.id,
             doc.title
         );
-        println!("   \"{}\"\n", truncate_text(doc.body, 120));
+        println!("   \"{}\"\n", snippet);
     }
 }
 
@@ -210,10 +212,12 @@ fn handle_phrase_search(
         return;
     }
 
+    let snippet_cfg = SnippetConfig::default();
     for (rank, &doc_id) in doc_ids.iter().enumerate() {
         let doc = doc_store.get(&doc_id).unwrap();
+        let snippet = generate_snippet(doc.body, phrase, index.analyzer(), &snippet_cfg);
         println!("{}. [Doc {}] {}", rank + 1, doc.id, doc.title);
-        println!("   \"{}\"\n", truncate_text(doc.body, 120));
+        println!("   \"{}\"\n", snippet);
     }
 }
 
@@ -234,10 +238,12 @@ fn handle_boolean_and(
         duration
     );
 
+    let snippet_cfg = SnippetConfig::default();
     for (rank, posting) in matches.iter().enumerate() {
         let doc = doc_store.get(&posting.doc_id).unwrap();
+        let snippet = generate_snippet(doc.body, args, index.analyzer(), &snippet_cfg);
         println!("{}. [Doc {}] {}", rank + 1, doc.id, doc.title);
-        println!("   \"{}\"\n", truncate_text(doc.body, 120));
+        println!("   \"{}\"\n", snippet);
     }
 }
 
@@ -258,18 +264,11 @@ fn handle_boolean_or(
         duration
     );
 
+    let snippet_cfg = SnippetConfig::default();
     for (rank, posting) in matches.iter().enumerate() {
         let doc = doc_store.get(&posting.doc_id).unwrap();
+        let snippet = generate_snippet(doc.body, args, index.analyzer(), &snippet_cfg);
         println!("{}. [Doc {}] {}", rank + 1, doc.id, doc.title);
-        println!("   \"{}\"\n", truncate_text(doc.body, 120));
-    }
-}
-
-fn truncate_text(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
-        text.to_string()
-    } else {
-        let boundary = text.char_indices().nth(max_len).map(|(i, _)| i).unwrap_or(max_len);
-        format!("{}...", &text[..boundary])
+        println!("   \"{}\"\n", snippet);
     }
 }

@@ -4,6 +4,7 @@ pub mod crawler;
 pub mod evaluation;
 pub mod index;
 pub mod ranking;
+pub mod snippet;
 pub mod stemmer;
 pub mod storage;
 pub mod tokenizer;
@@ -24,6 +25,7 @@ pub use evaluation::{
 };
 pub use index::{DocId, InvertedIndex, Posting};
 pub use ranking::{idf, rank_bm25, BM25Params, ScoredDocument};
+pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};
 pub use stemmer::stem;
 pub use storage::{load_from_file, save_to_file, StorageError};
 pub use tokenizer::{tokenize, Token};
