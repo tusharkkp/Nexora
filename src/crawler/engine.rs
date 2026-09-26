@@ -44,6 +44,8 @@ pub struct CrawledDocument {
     pub title: String,
     /// The clean, stripped body text
     pub text: String,
+    /// Canonical URLs of outbound hyperlinks discovered on this page
+    pub outgoing_links: Vec<String>,
 }
 
 /// Execution summary returned upon completing a crawl session.
@@ -185,6 +187,7 @@ impl<F: PageFetcher> Crawler<F> {
                         url: next_url,
                         title: page.title,
                         text: page.text,
+                        outgoing_links: page.outgoing_links,
                     });
                 }
                 Err(_) => {

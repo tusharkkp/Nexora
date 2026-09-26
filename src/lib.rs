@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod compression;
 pub mod crawler;
 pub mod evaluation;
+pub mod graph;
 pub mod index;
 pub mod ranking;
 pub mod snippet;
@@ -23,8 +24,11 @@ pub use evaluation::{
     dcg_at_k, evaluate_bm25, idcg_at_k, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank,
     BenchmarkMetrics, QueryJudgment,
 };
+pub use graph::{compute_pagerank, PageRankParams, WebGraph};
 pub use index::{DocId, InvertedIndex, Posting};
-pub use ranking::{idf, rank_bm25, BM25Params, ScoredDocument};
+pub use ranking::{
+    idf, rank_bm25, rank_bm25_with_pagerank, BM25Params, HybridRankingParams, ScoredDocument,
+};
 pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};
 pub use stemmer::stem;
 pub use storage::{load_from_file, save_to_file, StorageError};

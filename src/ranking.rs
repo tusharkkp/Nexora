@@ -122,6 +122,55 @@ pub fn rank_bm25(index: &InvertedIndex, query: &str, params: &BM25Params) -> Vec
     ranked_docs
 }
 
+/// Hyperparameters for hybrid ranking combining BM25 relevance and PageRank link authority.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HybridRankingParams {
+    /// Base BM25 textual scoring parameters
+    pub bm25: BM25Params,
+    /// Weighting coefficient applied to PageRank authority (default: 1.0)
+    pub alpha: f64,
+    /// Internal scaling factor for the logarithmic PageRank boost (default: 100.0)
+    pub beta: f64,
+}
+
+impl Default for HybridRankingParams {
+    fn default() -> Self {
+        Self {
+            bm25: BM25Params::default(),
+            alpha: 1.0,
+            beta: 100.0,
+        }
+    }
+}
+
+/// Computes combined ranking combining BM25 textual matching and PageRank link authority.
+///
+/// Formula:
+/// CombinedScore(d, q) = BM25(d, q) + alpha * ln(1.0 + beta * PR(d))
+pub fn rank_bm25_with_pagerank(
+    index: &InvertedIndex,
+    query: &str,
+    pagerank_scores: &HashMap<DocId, f64>,
+    params: &HybridRankingParams,
+) -> Vec<ScoredDocument> {
+    let mut results = rank_bm25(index, query, &params.bm25);
+
+    for doc in &mut results {
+        let pr = pagerank_scores.get(&doc.doc_id).copied().unwrap_or(0.0);
+        let authority_boost = params.alpha * (1.0 + params.beta * pr).ln();
+        doc.score += authority_boost;
+    }
+
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.doc_id.cmp(&b.doc_id))
+    });
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,4 +247,26 @@ mod tests {
         assert_eq!(results[0].doc_id, 0);
         assert!(results.len() == 3);
     }
+
+    #[test]
+    fn test_hybrid_bm25_with_pagerank() {
+        let mut index = InvertedIndex::new();
+        // Both documents have identical text and length
+        index.add_document(0, "search engine architecture");
+        index.add_document(1, "search engine architecture");
+
+        let mut pr_scores = HashMap::new();
+        pr_scores.insert(0, 0.1);
+        pr_scores.insert(1, 0.9); // Doc 1 has much higher link authority
+
+        let hybrid_params = HybridRankingParams::default();
+        let results = rank_bm25_with_pagerank(&index, "search engine", &pr_scores, &hybrid_params);
+
+        assert_eq!(results.len(), 2);
+        // Doc 1 wins due to PageRank authority boost!
+        assert_eq!(results[0].doc_id, 1);
+        assert_eq!(results[1].doc_id, 0);
+        assert!(results[0].score > results[1].score);
+    }
 }
+
