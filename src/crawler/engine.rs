@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
 use crate::crawler::fetcher::PageFetcher;
 use crate::crawler::frontier::UrlFrontier;
 use crate::crawler::html::extract_page;
+use crate::crawler::robots::RobotsTxt;
+use crate::crawler::url::parse_url;
 use crate::index::{DocId, InvertedIndex};
 
 /// Configuration options controlling crawler behavior.
@@ -13,6 +16,10 @@ pub struct CrawlConfig {
     pub max_pages: usize,
     /// Maximum time to wait for domain politeness cooldown before giving up (if blocked)
     pub max_wait: Duration,
+    /// Whether to fetch and adhere to domain `robots.txt` rules
+    pub respect_robots_txt: bool,
+    /// User-agent identity evaluated against `robots.txt` rules
+    pub user_agent: String,
 }
 
 impl Default for CrawlConfig {
@@ -20,6 +27,8 @@ impl Default for CrawlConfig {
         Self {
             max_pages: 50,
             max_wait: Duration::from_secs(10),
+            respect_robots_txt: true,
+            user_agent: "NexoraBot".to_string(),
         }
     }
 }
@@ -44,6 +53,8 @@ pub struct CrawlSummary {
     pub pages_visited: usize,
     /// Total network/fetch failures encountered
     pub pages_failed: usize,
+    /// Total pages skipped due to robots.txt Disallow directives
+    pub pages_disallowed: usize,
     /// Total new hyperlinks discovered and queued
     pub links_discovered: usize,
     /// Registry of all crawled documents mapped to their assigned DocIds
@@ -51,11 +62,12 @@ pub struct CrawlSummary {
 }
 
 /// The Crawler engine coordinates graph traversal, politeness scheduling,
-/// content fetching, HTML parsing, and inverted index ingestion.
+/// robots.txt compliance, content fetching, HTML parsing, and inverted index ingestion.
 pub struct Crawler<F: PageFetcher> {
     frontier: UrlFrontier,
     fetcher: F,
     config: CrawlConfig,
+    robots_cache: HashMap<String, RobotsTxt>,
 }
 
 impl<F: PageFetcher> Crawler<F> {
@@ -65,6 +77,7 @@ impl<F: PageFetcher> Crawler<F> {
             frontier,
             fetcher,
             config,
+            robots_cache: HashMap::new(),
         }
     }
 
@@ -87,6 +100,7 @@ impl<F: PageFetcher> Crawler<F> {
         let mut documents = Vec::new();
         let mut pages_visited = 0;
         let mut pages_failed = 0;
+        let mut pages_disallowed = 0;
         let mut links_discovered = 0;
 
         while pages_visited < self.config.max_pages {
@@ -112,6 +126,34 @@ impl<F: PageFetcher> Crawler<F> {
                     }
                 }
             };
+
+            // Check robots.txt compliance before fetching
+            if self.config.respect_robots_txt {
+                if let Ok(parsed) = parse_url(&next_url) {
+                    let host = parsed.host_key();
+                    if !self.robots_cache.contains_key(&host) {
+                        let robots_url = format!("{}://{}/robots.txt", parsed.scheme, host);
+                        let robots = match self.fetcher.fetch(&robots_url) {
+                            Ok(content) => RobotsTxt::parse(&content),
+                            Err(_) => RobotsTxt::empty(),
+                        };
+                        self.robots_cache.insert(host.clone(), robots);
+                    }
+
+                    if let Some(robots) = self.robots_cache.get(&host) {
+                        let path_to_check = if let Some(ref q) = parsed.query {
+                            format!("{}?{}", parsed.path, q)
+                        } else {
+                            parsed.path.clone()
+                        };
+
+                        if !robots.is_allowed(&self.config.user_agent, &path_to_check) {
+                            pages_disallowed += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
 
             // Fetch page content
             match self.fetcher.fetch(&next_url) {
@@ -154,6 +196,7 @@ impl<F: PageFetcher> Crawler<F> {
         CrawlSummary {
             pages_visited,
             pages_failed,
+            pages_disallowed,
             links_discovered,
             documents,
         }
@@ -221,6 +264,7 @@ mod tests {
         let config = CrawlConfig {
             max_pages: 10,
             max_wait: Duration::from_millis(50),
+            ..Default::default()
         };
 
         let mut crawler = Crawler::new(frontier, fetcher, config);
@@ -277,6 +321,7 @@ mod tests {
         let config = CrawlConfig {
             max_pages: 3, // strictly limit to 3 pages
             max_wait: Duration::from_millis(50),
+            ..Default::default()
         };
 
         let mut crawler = Crawler::new(frontier, fetcher, config);
@@ -285,5 +330,68 @@ mod tests {
         assert_eq!(summary.pages_visited, 3);
         assert_eq!(index.total_documents(), 3);
         assert_eq!(summary.documents.len(), 3);
+    }
+
+    #[test]
+    fn test_crawler_robots_txt_compliance() {
+        let mut fetcher = MockFetcher::new();
+
+        // robots.txt disallows /admin/
+        fetcher.add_page(
+            "https://example.com/robots.txt",
+            r#"
+            User-agent: *
+            Disallow: /admin/
+            "#,
+        );
+
+        // Home page links to /public/news and /admin/secret
+        fetcher.add_page(
+            "https://example.com/index.html",
+            r#"
+            <html><head><title>Home</title></head>
+            <body>
+                <a href="/public/news">Public News</a>
+                <a href="/admin/secret">Admin Secret</a>
+            </body></html>
+            "#,
+        );
+
+        fetcher.add_page(
+            "https://example.com/public/news",
+            "<html><head><title>Public News</title></head><body>Exciting news today!</body></html>",
+        );
+
+        fetcher.add_page(
+            "https://example.com/admin/secret",
+            "<html><head><title>Admin Secret</title></head><body>Top secret passwords</body></html>",
+        );
+
+        let mut frontier = UrlFrontier::new(Duration::from_millis(0));
+        frontier.push("https://example.com/index.html");
+
+        let mut index = InvertedIndex::new();
+        let config = CrawlConfig {
+            max_pages: 10,
+            max_wait: Duration::from_millis(50),
+            respect_robots_txt: true,
+            user_agent: "NexoraBot".to_string(),
+        };
+
+        let mut crawler = Crawler::new(frontier, fetcher, config);
+        let summary = crawler.crawl(&mut index);
+
+        // index.html and public/news should be visited, but admin/secret disallowed
+        assert_eq!(summary.pages_visited, 2);
+        assert_eq!(summary.pages_disallowed, 1);
+        assert_eq!(index.total_documents(), 2);
+
+        // Verify index does NOT contain admin secret keywords
+        let results = rank_bm25(&index, "passwords", &crate::ranking::BM25Params::default());
+        assert!(results.is_empty(), "Admin secret page must not be indexed");
+
+        // Verify public news is indexed and searchable
+        let news_results = rank_bm25(&index, "exciting news", &crate::ranking::BM25Params::default());
+        assert!(!news_results.is_empty(), "Public news page must be indexed");
     }
 }
