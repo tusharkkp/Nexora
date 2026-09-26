@@ -48,6 +48,11 @@ impl InvertedIndex {
         self.total_documents
     }
 
+    /// Returns a reference to the index's Analyzer.
+    pub fn analyzer(&self) -> &Analyzer {
+        &self.analyzer
+    }
+
     /// Returns the total term count (length) of a specific document.
     pub fn doc_length(&self, doc_id: DocId) -> Option<u32> {
         self.doc_lengths.get(&doc_id).copied()
@@ -327,6 +332,16 @@ impl InvertedIndex {
         }
 
         false
+    }
+
+    /// Performs Okapi BM25 relevance search using custom parameters.
+    pub fn search_bm25(&self, query: &str, params: &crate::ranking::BM25Params) -> Vec<crate::ranking::ScoredDocument> {
+        crate::ranking::rank_bm25(self, query, params)
+    }
+
+    /// Performs Okapi BM25 relevance search using standard default parameters (k1 = 1.2, b = 0.75).
+    pub fn search_bm25_default(&self, query: &str) -> Vec<crate::ranking::ScoredDocument> {
+        crate::ranking::rank_bm25(self, query, &crate::ranking::BM25Params::default())
     }
 }
 
