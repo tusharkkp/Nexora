@@ -31,7 +31,10 @@ pub use ranking::{
 };
 pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};
 pub use stemmer::stem;
-pub use storage::{load_from_file, save_to_file, StorageError};
+pub use storage::{
+    load_from_file, load_metadata_from_file, save_metadata_to_file, save_to_file, DocumentMetadata,
+    StorageError,
+};
 pub use tokenizer::{tokenize, Token};
 
 

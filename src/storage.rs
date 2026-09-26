@@ -5,13 +5,16 @@ use std::path::Path;
 
 use crate::analyzer::Analyzer;
 use crate::compression::{compress_sorted_u32, decode_vbyte, decompress_sorted_u32, encode_vbyte};
-use crate::index::{InvertedIndex, Posting};
+use crate::index::{DocId, InvertedIndex, Posting};
 
 /// Magic signature bytes for uncompressed v1 format.
 pub const MAGIC_V1: &[u8; 8] = b"NEXORA01";
 
 /// Magic signature bytes for modern compressed v2 format.
 pub const MAGIC_V2: &[u8; 8] = b"NEXORA02";
+
+/// Magic signature bytes for document metadata companion format.
+pub const MAGIC_META: &[u8; 8] = b"NEXMETA1";
 
 /// Errors that can occur during index serialization or deserialization.
 #[derive(Debug)]
@@ -345,6 +348,124 @@ pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<InvertedIndex, StorageE
 }
 
 // -----------------------------------------------------------------------------
+// Document Metadata Persistence (Companion Format)
+// -----------------------------------------------------------------------------
+
+/// Metadata record associated with a document (persisted alongside the index).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DocumentMetadata {
+    /// The dense internal document identifier
+    pub doc_id: DocId,
+    /// Canonical source URL
+    pub url: String,
+    /// Extracted page title
+    pub title: String,
+    /// Full clean body text
+    pub body: String,
+    /// Computed PageRank authority score
+    pub pagerank: f64,
+}
+
+/// Serializes document metadata into a binary stream adhering to the `.meta` format.
+pub fn save_metadata<W: Write>(
+    metadata: &HashMap<DocId, DocumentMetadata>,
+    writer: &mut W,
+) -> Result<(), StorageError> {
+    writer.write_all(MAGIC_META)?;
+    let count = metadata.len() as u32;
+    writer.write_all(&count.to_le_bytes())?;
+
+    for (&doc_id, doc) in metadata {
+        writer.write_all(&doc_id.to_le_bytes())?;
+
+        let url_bytes = doc.url.as_bytes();
+        writer.write_all(&(url_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(url_bytes)?;
+
+        let title_bytes = doc.title.as_bytes();
+        writer.write_all(&(title_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(title_bytes)?;
+
+        let body_bytes = doc.body.as_bytes();
+        writer.write_all(&(body_bytes.len() as u32).to_le_bytes())?;
+        writer.write_all(body_bytes)?;
+
+        writer.write_all(&doc.pagerank.to_le_bytes())?;
+    }
+
+    Ok(())
+}
+
+/// Deserializes document metadata from a binary stream.
+pub fn load_metadata<R: Read>(
+    reader: &mut R,
+) -> Result<HashMap<DocId, DocumentMetadata>, StorageError> {
+    let mut magic = [0u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != MAGIC_META {
+        return Err(StorageError::InvalidMagicBytes(magic));
+    }
+
+    let count = read_u32(reader)? as usize;
+    let mut map = HashMap::with_capacity(count);
+
+    for _ in 0..count {
+        let doc_id = read_u32(reader)?;
+
+        let url_len = read_u32(reader)? as usize;
+        let mut url_bytes = vec![0u8; url_len];
+        reader.read_exact(&mut url_bytes)?;
+        let url = String::from_utf8(url_bytes)?;
+
+        let title_len = read_u32(reader)? as usize;
+        let mut title_bytes = vec![0u8; title_len];
+        reader.read_exact(&mut title_bytes)?;
+        let title = String::from_utf8(title_bytes)?;
+
+        let body_len = read_u32(reader)? as usize;
+        let mut body_bytes = vec![0u8; body_len];
+        reader.read_exact(&mut body_bytes)?;
+        let body = String::from_utf8(body_bytes)?;
+
+        let mut pr_bytes = [0u8; 8];
+        reader.read_exact(&mut pr_bytes)?;
+        let pagerank = f64::from_le_bytes(pr_bytes);
+
+        map.insert(
+            doc_id,
+            DocumentMetadata {
+                doc_id,
+                url,
+                title,
+                body,
+                pagerank,
+            },
+        );
+    }
+
+    Ok(map)
+}
+
+/// Saves document metadata to a companion disk file.
+pub fn save_metadata_to_file<P: AsRef<Path>>(
+    metadata: &HashMap<DocId, DocumentMetadata>,
+    path: P,
+) -> Result<(), StorageError> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+    save_metadata(metadata, &mut writer)
+}
+
+/// Loads document metadata from a companion disk file.
+pub fn load_metadata_from_file<P: AsRef<Path>>(
+    path: P,
+) -> Result<HashMap<DocId, DocumentMetadata>, StorageError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    load_metadata(&mut reader)
+}
+
+// -----------------------------------------------------------------------------
 // Low-Level Byte Helpers
 // -----------------------------------------------------------------------------
 
@@ -462,4 +583,42 @@ mod tests {
         // Compressed v2 must be strictly smaller than uncompressed v1
         assert!(v2_buffer.len() < v1_buffer.len());
     }
+
+    #[test]
+    fn test_metadata_serialization_roundtrip() {
+        let mut meta = HashMap::new();
+        meta.insert(
+            1,
+            DocumentMetadata {
+                doc_id: 1,
+                url: "https://rust-lang.org".to_string(),
+                title: "Rust Language".to_string(),
+                body: "Empowering developers to build reliable software.".to_string(),
+                pagerank: 0.85,
+            },
+        );
+        meta.insert(
+            2,
+            DocumentMetadata {
+                doc_id: 2,
+                url: "https://crates.io".to_string(),
+                title: "Package Registry".to_string(),
+                body: "Discover crates.".to_string(),
+                pagerank: 0.15,
+            },
+        );
+
+        let mut buffer = Vec::new();
+        save_metadata(&meta, &mut buffer).expect("save_metadata should succeed");
+
+        let mut cursor = Cursor::new(buffer);
+        let loaded = load_metadata(&mut cursor).expect("load_metadata should succeed");
+
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[&1].title, "Rust Language");
+        assert_eq!(loaded[&1].url, "https://rust-lang.org");
+        assert!((loaded[&1].pagerank - 0.85).abs() < 1e-6);
+        assert_eq!(loaded[&2].title, "Package Registry");
+    }
 }
+
