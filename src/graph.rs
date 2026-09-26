@@ -56,6 +56,11 @@ impl WebGraph {
         self.nodes.is_empty()
     }
 
+    /// Returns the total number of directed edges in the graph.
+    pub fn edge_count(&self) -> usize {
+        self.out_links.values().map(|s| s.len()).sum()
+    }
+
     /// Returns the number of outbound hyperlinks originating from `node`.
     pub fn out_degree(&self, node: DocId) -> usize {
         self.out_links.get(&node).map(|s| s.len()).unwrap_or(0)
