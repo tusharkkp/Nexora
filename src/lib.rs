@@ -15,7 +15,8 @@ pub use compression::{
 };
 pub use crawler::{
     decode_html_entities, extract_page, normalize_url, parse_url, resolve_relative_url,
-    ExtractedPage, ParsedUrl, UrlFrontier,
+    CrawlConfig, CrawlSummary, CrawledDocument, Crawler, ExtractedPage, MockFetcher,
+    PageFetcher, ParsedUrl, UrlFrontier,
 };
 pub use evaluation::{
     dcg_at_k, evaluate_bm25, idcg_at_k, ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank,
