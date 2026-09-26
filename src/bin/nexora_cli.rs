@@ -7,7 +7,7 @@ use nexora::{
     compare_rankers, compute_pagerank, generate_snippet, load_from_file,
     load_metadata_from_file, rank_bm25_with_pagerank, save_metadata_to_file, save_to_file,
     CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
-    HybridRankingParams, InvertedIndex, PageRankParams, QueryJudgment, SnippetConfig,
+    HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, QueryJudgment, SnippetConfig,
     SpellChecker, UrlFrontier, WebGraph,
 };
 
@@ -248,6 +248,8 @@ fn run_interactive_repl() {
                         }
                         Err(e) => println!("✘ Failed to load index: {}", e),
                     }
+                } else if let Some(prefix) = query.strip_prefix(":suggest ") {
+                    handle_suggest(&index, &doc_store, prefix.trim());
                 } else if let Some(args) = query.strip_prefix(":and ") {
                     handle_boolean_and(&index, &doc_store, args);
                 } else if let Some(args) = query.strip_prefix(":or ") {
@@ -255,6 +257,12 @@ fn run_interactive_repl() {
                 } else if query.starts_with('"') && query.ends_with('"') && query.len() >= 2 {
                     let phrase = &query[1..query.len() - 1];
                     handle_phrase_search(&index, &doc_store, phrase);
+                } else if let Some(prefix) = query.strip_suffix('*') {
+                    if !prefix.is_empty() {
+                        handle_prefix_search(&index, &doc_store, prefix);
+                    } else {
+                        handle_bm25_search(&index, &doc_store, query);
+                    }
                 } else {
                     handle_bm25_search(&index, &doc_store, query);
                 }
@@ -267,6 +275,8 @@ fn print_help() {
     println!("Commands:");
     println!("  <terms>                     Free-text search (BM25 + PageRank hybrid ranking)");
     println!("  \"<phrase>\"                  Exact consecutive phrase search (e.g. '\"inverted index\"')");
+    println!("  <prefix>*                   Prefix wildcard search (e.g. 'rust*' or 'index*')");
+    println!("  :suggest <prefix>           Frequency-ranked autocomplete suggestions (e.g. ':suggest sea')");
     println!("  :and <t1> <t2>              Boolean AND intersection");
     println!("  :or  <t1> <t2>              Boolean OR union");
     println!("  :crawl <url> [N] [out.nex]  Crawl website, calculate PageRank, and save index");
@@ -672,3 +682,88 @@ fn handle_boolean_or(
         }
     }
 }
+
+fn handle_suggest(
+    _index: &InvertedIndex,
+    doc_store: &HashMap<DocId, DocumentEntry>,
+    prefix: &str,
+) {
+    if prefix.is_empty() {
+        println!("Please provide a prefix. Example: :suggest sea");
+        return;
+    }
+
+    let start = Instant::now();
+    // Build unstemmed trie from doc store texts for natural word suggestions
+    let trie = PrefixTrie::from_documents(
+        doc_store.values().map(|d| format!("{} {}", d.title, d.body)),
+    );
+    let suggestions = trie.suggest(prefix, 8);
+    let duration = start.elapsed();
+
+    println!(
+        "\n--- Autocomplete Suggestions for '{}' (found {} in {:.2?}) ---",
+        prefix,
+        suggestions.len(),
+        duration
+    );
+
+    if suggestions.is_empty() {
+        println!("No suggestions starting with '{}'.", prefix);
+    } else {
+        println!("| {:<20} | {:<12} | {:<12} |", "Suggestion", "Frequency", "Documents");
+        println!("|:{:-<20}-|-:{:-<12}:|-:{:-<12}:|", "", "", "");
+        for s in suggestions {
+            println!("| {:<20} | {:<12} | {:<12} |", s.term, s.term_frequency, s.doc_frequency);
+        }
+    }
+}
+
+fn handle_prefix_search(
+    index: &InvertedIndex,
+    doc_store: &HashMap<DocId, DocumentEntry>,
+    prefix: &str,
+) {
+    let start = Instant::now();
+    let postings = index.search_prefix(prefix);
+    let duration = start.elapsed();
+
+    // Use trie over index dictionary to show which terms matched
+    let trie = PrefixTrie::from_index(index);
+    let matching_terms = trie.find_by_prefix(prefix);
+
+    println!(
+        "\n--- Prefix Wildcard Search for: '{}*' ({} documents across {} vocabulary terms in {:.2?}) ---",
+        prefix,
+        postings.len(),
+        matching_terms.len(),
+        duration
+    );
+
+    if !matching_terms.is_empty() {
+        let display_terms = if matching_terms.len() > 8 {
+            format!("{}, ... ({} total)", matching_terms[..8].join(", "), matching_terms.len())
+        } else {
+            matching_terms.join(", ")
+        };
+        println!("  Matching vocabulary terms: [{}]", display_terms);
+    }
+
+    if postings.is_empty() {
+        println!("No documents match prefix '{}*'.", prefix);
+        return;
+    }
+
+    let snippet_cfg = SnippetConfig::default();
+    for (rank, posting) in postings.iter().enumerate() {
+        if let Some(doc) = doc_store.get(&posting.doc_id) {
+            let snippet = generate_snippet(&doc.body, prefix, index.analyzer(), &snippet_cfg);
+            println!("{}. [Doc {}] {} (matches: {})", rank + 1, doc.id, doc.title, posting.term_frequency);
+            if let Some(ref url) = doc.url {
+                println!("   \x1b[34m{}\x1b[0m", url);
+            }
+            println!("   \"{}\"\n", snippet);
+        }
+    }
+}
+

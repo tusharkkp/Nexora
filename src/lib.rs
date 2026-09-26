@@ -10,6 +10,7 @@ pub mod spelling;
 pub mod stemmer;
 pub mod storage;
 pub mod tokenizer;
+pub mod trie;
 
 pub use analyzer::{Analyzer, Term};
 pub use compression::{
@@ -39,6 +40,7 @@ pub use storage::{
     StorageError,
 };
 pub use tokenizer::{tokenize, Token};
+pub use trie::{PrefixSuggestion, PrefixTrie, TrieNode};
 
 
 

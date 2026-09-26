@@ -282,6 +282,33 @@ impl InvertedIndex {
         accumulated
     }
 
+    /// Performs a prefix search, matching all dictionary terms starting with `prefix`
+    /// and returning the union of their postings lists.
+    pub fn search_prefix(&self, prefix: &str) -> Vec<Posting> {
+        let clean = prefix.trim().to_lowercase();
+        if clean.is_empty() {
+            return Vec::new();
+        }
+
+        let mut matching_terms: Vec<&str> = self
+            .dictionary
+            .keys()
+            .filter(|k| k.starts_with(&clean))
+            .map(|s| s.as_str())
+            .collect();
+
+        matching_terms.sort();
+
+        let mut accumulated: Vec<Posting> = Vec::new();
+        for term in matching_terms {
+            if let Some(postings) = self.dictionary.get(term) {
+                accumulated = Self::union(&accumulated, postings);
+            }
+        }
+
+        accumulated
+    }
+
     // -------------------------------------------------------------------------
     // Phrase Search Algorithm (Positional Intersection)
     // -------------------------------------------------------------------------
@@ -467,6 +494,30 @@ mod tests {
         // 3-word phrase "quick brown fox"
         let matches = index.search_phrase("quick brown fox");
         assert_eq!(matches, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_prefix_search() {
+        let index = create_test_index();
+
+        // "jum" matches "jumps" (stemmed to "jump") -> Doc 0
+        let matches = index.search_prefix("jum");
+        let doc_ids: Vec<DocId> = matches.iter().map(|p| p.doc_id).collect();
+        assert_eq!(doc_ids, vec![0]);
+
+        // "qu" matches "quick" -> Doc 0 and Doc 1
+        let matches = index.search_prefix("qu");
+        let doc_ids: Vec<DocId> = matches.iter().map(|p| p.doc_id).collect();
+        assert_eq!(doc_ids, vec![0, 1]);
+
+        // "bro" matches "brown" -> Doc 0 and Doc 1
+        let matches = index.search_prefix("bro");
+        let doc_ids: Vec<DocId> = matches.iter().map(|p| p.doc_id).collect();
+        assert_eq!(doc_ids, vec![0, 1]);
+
+        // Non-existent prefix
+        let matches = index.search_prefix("xyz");
+        assert!(matches.is_empty());
     }
 
     #[test]
