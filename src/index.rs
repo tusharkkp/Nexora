@@ -48,6 +48,11 @@ impl InvertedIndex {
         self.total_documents
     }
 
+    /// Returns the number of distinct normalized terms in the index dictionary.
+    pub fn vocabulary_size(&self) -> usize {
+        self.dictionary.len()
+    }
+
     /// Returns a reference to the index's Analyzer.
     pub fn analyzer(&self) -> &Analyzer {
         &self.analyzer
