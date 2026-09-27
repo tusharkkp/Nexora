@@ -53,12 +53,17 @@ pub fn idf(total_docs: usize, doc_freq: usize) -> f64 {
     ((numerator / denominator) + 1.0).ln()
 }
 
-/// Scores all matching documents in the index for a given query string using BM25.
+/// Scores all matching documents in the index for a given slice of weighted query terms using BM25.
 ///
-/// Results are returned sorted in descending order of relevance.
-pub fn rank_bm25(index: &InvertedIndex, query: &str, params: &BM25Params) -> Vec<ScoredDocument> {
+/// In weighted BM25, each term's score contribution is scaled by its positive weight:
+/// Score(d, Q) = sum_{t in Q} ( w_t * IDF(t) * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (|d| / avgdl))) )
+pub fn rank_bm25_weighted(
+    index: &InvertedIndex,
+    weighted_terms: &[(String, f64)],
+    params: &BM25Params,
+) -> Vec<ScoredDocument> {
     let total_docs = index.total_documents();
-    if total_docs == 0 {
+    if total_docs == 0 || weighted_terms.is_empty() {
         return Vec::new();
     }
 
@@ -67,25 +72,15 @@ pub fn rank_bm25(index: &InvertedIndex, query: &str, params: &BM25Params) -> Vec
         return Vec::new();
     }
 
-    // Step 1: Analyze query using the engine's analyzer
-    let query_terms = index.analyzer().analyze(query);
-    if query_terms.is_empty() {
-        return Vec::new();
-    }
-
-    // Step 2: Accumulate scores across all query terms.
-    // Map: DocId -> accumulated BM25 score
+    // Accumulate scores across all weighted query terms.
     let mut scores: HashMap<DocId, f64> = HashMap::new();
 
-    // Deduplicate query terms to avoid scoring the same term twice
-    let mut seen_terms = std::collections::HashSet::new();
-
-    for term in query_terms {
-        if !seen_terms.insert(term.text.clone()) {
+    for (term_text, weight) in weighted_terms {
+        if *weight <= 0.0 {
             continue;
         }
 
-        if let Some(postings) = index.get_postings(&term.text) {
+        if let Some(postings) = index.get_postings(term_text) {
             let doc_freq = postings.len();
             let term_idf = idf(total_docs, doc_freq);
 
@@ -94,17 +89,17 @@ pub fn rank_bm25(index: &InvertedIndex, query: &str, params: &BM25Params) -> Vec
                 let tf = posting.term_frequency as f64;
                 let doc_len = index.doc_length(doc_id).unwrap_or(avgdl as u32) as f64;
 
-                // BM25 term weight formula
+                // BM25 term weight formula with query term weighting
                 let len_norm = 1.0 - params.b + (params.b * (doc_len / avgdl));
                 let tf_component = (tf * (params.k1 + 1.0)) / (tf + (params.k1 * len_norm));
 
-                let term_score = term_idf * tf_component;
+                let term_score = (*weight) * term_idf * tf_component;
                 *scores.entry(doc_id).or_insert(0.0) += term_score;
             }
         }
     }
 
-    // Step 3: Convert to ScoredDocument list and sort descending by score
+    // Convert to ScoredDocument list and sort descending by score
     let mut ranked_docs: Vec<ScoredDocument> = scores
         .into_iter()
         .map(|(doc_id, score)| ScoredDocument { doc_id, score })
@@ -120,6 +115,27 @@ pub fn rank_bm25(index: &InvertedIndex, query: &str, params: &BM25Params) -> Vec
     });
 
     ranked_docs
+}
+
+/// Scores all matching documents in the index for a given query string using BM25.
+///
+/// Results are returned sorted in descending order of relevance.
+pub fn rank_bm25(index: &InvertedIndex, query: &str, params: &BM25Params) -> Vec<ScoredDocument> {
+    let query_terms = index.analyzer().analyze(query);
+    if query_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen_terms = HashSet::new();
+    let mut weighted_terms = Vec::with_capacity(query_terms.len());
+
+    for term in query_terms {
+        if seen_terms.insert(term.text.clone()) {
+            weighted_terms.push((term.text, 1.0));
+        }
+    }
+
+    rank_bm25_weighted(index, &weighted_terms, params)
 }
 
 /// Hyperparameters for hybrid ranking combining BM25 relevance and PageRank link authority.
@@ -225,25 +241,20 @@ impl BM25FParams {
     }
 }
 
-/// Scores all matching documents across multiple fields (Title, Body, Anchor) using BM25F.
+/// Scores all matching documents across multiple fields (Title, Body, Anchor) for weighted query terms using BM25F.
 ///
-/// In BM25F, field term frequencies are length-normalized and linearly combined
-/// *before* applying the non-linear saturation curve:
+/// In weighted BM25F, field term frequencies are length-normalized and linearly combined
+/// before applying the non-linear saturation curve, scaled by query term weight:
 ///
 /// tf_tilde(t, d) = sum_{f in fields} ( w_f * tf(t, d, f) / (1 - b_f + b_f * (len(d, f) / avg_len_f)) )
-/// Score(d, Q) = sum_{t in Q} ( IDF(t) * ( tf_tilde(t, d) / (k1 + tf_tilde(t, d)) ) )
-pub fn rank_bm25f(
+/// Score(d, Q) = sum_{t in Q} ( w_t * IDF(t) * ( tf_tilde(t, d) / (k1 + tf_tilde(t, d)) ) )
+pub fn rank_bm25f_weighted(
     multi_index: &MultiFieldIndex,
-    query: &str,
+    weighted_terms: &[(String, f64)],
     params: &BM25FParams,
 ) -> Vec<ScoredDocument> {
     let total_docs = multi_index.total_documents();
-    if total_docs == 0 {
-        return Vec::new();
-    }
-
-    let query_terms = multi_index.analyzer().analyze(query);
-    if query_terms.is_empty() {
+    if total_docs == 0 || weighted_terms.is_empty() {
         return Vec::new();
     }
 
@@ -254,10 +265,9 @@ pub fn rank_bm25f(
     }
 
     let mut scores: HashMap<DocId, f64> = HashMap::new();
-    let mut seen_terms = HashSet::new();
 
-    for term in query_terms {
-        if !seen_terms.insert(term.text.clone()) {
+    for (term_text, weight) in weighted_terms {
+        if *weight <= 0.0 {
             continue;
         }
 
@@ -266,7 +276,7 @@ pub fn rank_bm25f(
 
         for &field in &MultiFieldIndex::standard_fields() {
             if let Some(index) = multi_index.get_field_index(field) {
-                if let Some(postings) = index.get_postings(&term.text) {
+                if let Some(postings) = index.get_postings(term_text) {
                     for posting in postings {
                         doc_field_tfs
                             .entry(posting.doc_id)
@@ -312,8 +322,9 @@ pub fn rank_bm25f(
             }
 
             if tf_tilde > 0.0 {
-                let term_score =
-                    term_idf * ((tf_tilde * (params.k1 + 1.0)) / (params.k1 + tf_tilde));
+                let term_score = (*weight)
+                    * term_idf
+                    * ((tf_tilde * (params.k1 + 1.0)) / (params.k1 + tf_tilde));
                 *scores.entry(doc_id).or_insert(0.0) += term_score;
             }
         }
@@ -332,6 +343,35 @@ pub fn rank_bm25f(
     });
 
     ranked_docs
+}
+
+/// Scores all matching documents across multiple fields (Title, Body, Anchor) using BM25F.
+///
+/// In BM25F, field term frequencies are length-normalized and linearly combined
+/// *before* applying the non-linear saturation curve:
+///
+/// tf_tilde(t, d) = sum_{f in fields} ( w_f * tf(t, d, f) / (1 - b_f + b_f * (len(d, f) / avg_len_f)) )
+/// Score(d, Q) = sum_{t in Q} ( IDF(t) * ( tf_tilde(t, d) / (k1 + tf_tilde(t, d)) ) )
+pub fn rank_bm25f(
+    multi_index: &MultiFieldIndex,
+    query: &str,
+    params: &BM25FParams,
+) -> Vec<ScoredDocument> {
+    let query_terms = multi_index.analyzer().analyze(query);
+    if query_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut seen_terms = HashSet::new();
+    let mut weighted_terms = Vec::with_capacity(query_terms.len());
+
+    for term in query_terms {
+        if seen_terms.insert(term.text.clone()) {
+            weighted_terms.push((term.text, 1.0));
+        }
+    }
+
+    rank_bm25f_weighted(multi_index, &weighted_terms, params)
 }
 
 /// Hyperparameters for hybrid BM25F ranking combining multi-field relevance and PageRank authority.

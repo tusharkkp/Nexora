@@ -30,9 +30,10 @@ use std::path::Path;
 use std::time::Instant;
 
 use nexora::{
-    BM25FParams, BM25Params, DocId, Field, InvertedIndex, MultiFieldIndex, QueryJudgment,
-    average_precision, load_cranfield_dataset, ndcg_at_k, precision_at_k, rank_bm25, rank_bm25f,
-    recall_at_k, reciprocal_rank,
+    BM25FParams, BM25Params, DocId, Field, InvertedIndex, MultiFieldIndex, PrfParams,
+    QueryJudgment, average_precision, expand_query_bm25, load_cranfield_dataset, ndcg_at_k,
+    precision_at_k, rank_bm25, rank_bm25_with_prf, rank_bm25f, rank_bm25f_with_prf, recall_at_k,
+    reciprocal_rank,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -245,7 +246,97 @@ fn test_cranfield_real_world_ir_evaluation() {
     }
 
     // -------------------------------------------------------------------------
-    // EXPERIMENT 3: Train / Test Split for Out-of-Sample Generalization
+    // EXPERIMENT 3: Pseudo-Relevance Feedback & Rocchio Query Expansion (PRF)
+    // -------------------------------------------------------------------------
+    println!(
+        "\n----------------------------------------------------------------------------------------"
+    );
+    println!("EXPERIMENT 3: Pseudo-Relevance Feedback & Rocchio Query Expansion (PRF)");
+    println!(
+        "----------------------------------------------------------------------------------------"
+    );
+
+    let prf_k3_m5 = PrfParams::default()
+        .with_feedback_docs(3)
+        .with_expansion_terms(5)
+        .with_beta(0.5);
+
+    let prf_k5_m5 = PrfParams::default()
+        .with_feedback_docs(5)
+        .with_expansion_terms(5)
+        .with_beta(0.5);
+
+    let prf_k5_m10 = PrfParams::default()
+        .with_feedback_docs(5)
+        .with_expansion_terms(10)
+        .with_beta(0.5);
+
+    let prf_k5_m5_b03 = PrfParams::default()
+        .with_feedback_docs(5)
+        .with_expansion_terms(5)
+        .with_beta(0.3);
+
+    let m_bm25_prf_k3 = evaluate_cranfield_queries(&judgments, |q| {
+        rank_bm25_with_prf(&flat_index, q, &bm25_defaults, &prf_k3_m5)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+
+    let m_bm25_prf_k5 = evaluate_cranfield_queries(&judgments, |q| {
+        rank_bm25_with_prf(&flat_index, q, &bm25_defaults, &prf_k5_m5)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+
+    let m_bm25_prf_k5_m10 = evaluate_cranfield_queries(&judgments, |q| {
+        rank_bm25_with_prf(&flat_index, q, &bm25_defaults, &prf_k5_m10)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+
+    let m_bm25_prf_b03 = evaluate_cranfield_queries(&judgments, |q| {
+        rank_bm25_with_prf(&flat_index, q, &bm25_defaults, &prf_k5_m5_b03)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+
+    let m_bm25f_prf = evaluate_cranfield_queries(&judgments, |q| {
+        rank_bm25f_with_prf(&multi_index, q, &bm25f_sci, &prf_k5_m5)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+
+    print!("{}", CranfieldMetrics::table_header());
+    println!("{}", m_bm25.format_row("Okapi BM25 Baseline"));
+    println!(
+        "{}",
+        m_bm25_prf_k3.format_row("BM25 + PRF (k=3, m=5, β=0.5)")
+    );
+    println!(
+        "{}",
+        m_bm25_prf_k5.format_row("BM25 + PRF (k=5, m=5, β=0.5)")
+    );
+    println!(
+        "{}",
+        m_bm25_prf_k5_m10.format_row("BM25 + PRF (k=5, m=10, β=0.5)")
+    );
+    println!(
+        "{}",
+        m_bm25_prf_b03.format_row("BM25 + PRF (k=5, m=5, β=0.3)")
+    );
+    println!("{}", m_bm25f_sci.format_row("BM25F Baseline (Title w=2.0)"));
+    println!(
+        "{}",
+        m_bm25f_prf.format_row("BM25F + PRF (k=5, m=5, β=0.5)")
+    );
+
+    // -------------------------------------------------------------------------
+    // EXPERIMENT 4: Train / Test Split for Out-of-Sample Generalization
     // -------------------------------------------------------------------------
     let split_idx = judgments.len() / 2;
     let (train_q, test_q) = judgments.split_at(split_idx);
@@ -275,6 +366,20 @@ fn test_cranfield_real_world_ir_evaluation() {
             .collect()
     });
 
+    // Evaluate BM25 + PRF on Train and Test
+    let train_bm25_prf = evaluate_cranfield_queries(train_q, |q| {
+        rank_bm25_with_prf(&flat_index, q, &bm25_defaults, &prf_k5_m5)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+    let test_bm25_prf = evaluate_cranfield_queries(test_q, |q| {
+        rank_bm25_with_prf(&flat_index, q, &bm25_defaults, &prf_k5_m5)
+            .into_iter()
+            .map(|s| s.doc_id)
+            .collect()
+    });
+
     // Evaluate BM25F (Title=2.0) on Train and Test
     let train_bm25f = evaluate_cranfield_queries(train_q, |q| {
         rank_bm25f(&multi_index, q, &bm25f_sci)
@@ -291,20 +396,28 @@ fn test_cranfield_real_world_ir_evaluation() {
 
     print!("{}", CranfieldMetrics::table_header());
     println!("{}", train_bm25.format_row("Train: BM25 Baseline"));
+    println!(
+        "{}",
+        train_bm25_prf.format_row("Train: BM25 + PRF (k=5, m=5)")
+    );
     println!("{}", train_bm25f.format_row("Train: BM25F (w=2.0)"));
     println!("{}", test_bm25.format_row("Test (Held-Out): BM25 Baseline"));
+    println!(
+        "{}",
+        test_bm25_prf.format_row("Test (Held-Out): BM25 + PRF (k=5, m=5)")
+    );
     println!(
         "{}",
         test_bm25f.format_row("Test (Held-Out): BM25F (w=2.0)")
     );
 
     // -------------------------------------------------------------------------
-    // EXPERIMENT 4: Sample Real Query Inspection
+    // EXPERIMENT 5: Sample Real Query Inspection
     // -------------------------------------------------------------------------
     println!(
         "\n----------------------------------------------------------------------------------------"
     );
-    println!("EXPERIMENT 4: Sample Query Inspection on Cranfield");
+    println!("EXPERIMENT 5: Sample Query Inspection on Cranfield");
     println!(
         "----------------------------------------------------------------------------------------"
     );
@@ -317,9 +430,32 @@ fn test_cranfield_real_world_ir_evaluation() {
         println!("  Total ground-truth relevant documents: {}", rel_count);
 
         let res_bm25 = rank_bm25(&flat_index, &qj.query, &bm25_defaults);
+        let res_bm25_prf = rank_bm25_with_prf(&flat_index, &qj.query, &bm25_defaults, &prf_k5_m5);
         let res_bm25f = rank_bm25f(&multi_index, &qj.query, &bm25f_sci);
 
+        let expanded = expand_query_bm25(&flat_index, &qj.query, &bm25_defaults, &prf_k5_m5);
+        let expansion_terms_str = expanded
+            .expansion_terms
+            .iter()
+            .map(|(t, score)| format!("{}:{:.2}", t, score))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  PRF Expansion Terms: [{}]", expansion_terms_str);
+
         let top3_bm25: Vec<_> = res_bm25
+            .iter()
+            .take(3)
+            .map(|s| {
+                let is_rel = if qj.relevance.contains_key(&s.doc_id) {
+                    "★ Rel"
+                } else {
+                    "·"
+                };
+                format!("Doc {} ({})", s.doc_id, is_rel)
+            })
+            .collect();
+
+        let top3_bm25_prf: Vec<_> = res_bm25_prf
             .iter()
             .take(3)
             .map(|s| {
@@ -345,8 +481,9 @@ fn test_cranfield_real_world_ir_evaluation() {
             })
             .collect();
 
-        println!("    BM25  Top 3: [{}]", top3_bm25.join(", "));
-        println!("    BM25F Top 3: [{}]", top3_bm25f.join(", "));
+        println!("    BM25      Top 3: [{}]", top3_bm25.join(", "));
+        println!("    BM25+PRF  Top 3: [{}]", top3_bm25_prf.join(", "));
+        println!("    BM25F     Top 3: [{}]", top3_bm25f.join(", "));
     }
 
     println!("\n{}", "=".repeat(88));

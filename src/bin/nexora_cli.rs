@@ -4,12 +4,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use nexora::{
-    CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
-    HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, QueryJudgment,
+    BM25Params, CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
+    HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, PrfParams, QueryJudgment,
     SearchEngineState, SearchServer, ServerConfig, SnippetConfig, SpellChecker, UrlFrontier,
-    WebGraph, compare_rankers, compute_pagerank, execute_query, generate_snippet, load_from_file,
-    load_metadata_from_file, parse_query, rank_bm25_with_pagerank, save_metadata_to_file,
-    save_to_file,
+    WebGraph, compare_rankers, compute_pagerank, execute_query, expand_query_bm25,
+    generate_snippet, load_from_file, load_metadata_from_file, parse_query,
+    rank_bm25_with_pagerank, rank_bm25_with_prf, save_metadata_to_file, save_to_file,
 };
 
 /// In-memory representation of an indexed document with optional URL and link authority.
@@ -72,12 +72,13 @@ fn print_cli_usage() {
     println!("Nexora Search Engine - Command Line Interface\n");
     println!("USAGE:");
     println!("  nexora_cli crawl <seed_url> [--max-pages <N>] [--output <file.nex>]");
-    println!("  nexora_cli search <query> [--index <file.nex>]");
+    println!("  nexora_cli search <query> [--index <file.nex>] [--prf]");
     println!("  nexora_cli serve [--port <PORT>] [--index <file.nex>]");
     println!("  nexora_cli                                  (launches interactive REPL)\n");
     println!("EXAMPLES:");
     println!("  nexora_cli crawl https://example.com --max-pages 10 --output web.nex");
     println!("  nexora_cli search \"search engine\" --index web.nex");
+    println!("  nexora_cli search \"supersonic flutter\" --prf");
     println!("  nexora_cli serve --port 8080 --index web.nex");
 }
 
@@ -130,12 +131,16 @@ fn handle_cli_search(args: &[String]) {
 
     let query = &args[0];
     let mut index_path: Option<&str> = None;
+    let mut use_prf = false;
 
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--index" && i + 1 < args.len() {
             index_path = Some(&args[i + 1]);
             i += 2;
+        } else if args[i] == "--prf" {
+            use_prf = true;
+            i += 1;
         } else {
             i += 1;
         }
@@ -150,7 +155,11 @@ fn handle_cli_search(args: &[String]) {
         build_default_corpus()
     };
 
-    handle_bm25_search(&index, &doc_store, query);
+    if use_prf {
+        handle_prf_search(&index, &doc_store, query);
+    } else {
+        handle_bm25_search(&index, &doc_store, query);
+    }
 }
 
 fn handle_cli_serve(args: &[String]) {
@@ -341,6 +350,10 @@ fn run_interactive_repl() {
                     start_repl_server(&index, &doc_store, port);
                 } else if let Some(prefix) = query.strip_prefix(":suggest ") {
                     handle_suggest(&index, &doc_store, prefix.trim());
+                } else if let Some(query_str) = query.strip_prefix(":expand ") {
+                    handle_expand_query(&index, query_str.trim());
+                } else if let Some(query_str) = query.strip_prefix(":prf ") {
+                    handle_prf_search(&index, &doc_store, query_str.trim());
                 } else if let Some(expr) = query.strip_prefix(":query ") {
                     handle_boolean_ast_search(&index, &doc_store, expr.trim());
                 } else if let Some(args) = query.strip_prefix(":and ") {
@@ -385,6 +398,8 @@ fn print_help() {
     println!(
         "  :suggest <prefix>           Frequency-ranked autocomplete suggestions (e.g. ':suggest sea')"
     );
+    println!("  :expand <query>             Show Rocchio PRF expansion terms & reformulated query");
+    println!("  :prf <query>                Search with Pseudo-Relevance Feedback (Rocchio PRF)");
     println!("  :query <expr>               Compile & execute structured AST query");
     println!(
         "  :serve [port]               Launch embedded HTTP search server & Web SERP (default: 8080)"
@@ -648,6 +663,76 @@ fn handle_bm25_search(
                 render_scored_results(&corrected_results, doc_store, &suggestion, index.analyzer());
             }
         }
+        return;
+    }
+
+    render_scored_results(&results, doc_store, query, index.analyzer());
+}
+
+fn handle_expand_query(index: &InvertedIndex, query: &str) {
+    let bm25_params = BM25Params::default();
+    let prf_params = PrfParams::default();
+
+    let start = Instant::now();
+    let expanded = expand_query_bm25(index, query, &bm25_params, &prf_params);
+    let duration = start.elapsed();
+
+    println!(
+        "\n--- Rocchio PRF Query Expansion for: '{}' ({:.2?}) ---",
+        query, duration
+    );
+
+    if expanded.expansion_terms.is_empty() {
+        println!("No expansion terms extracted from top-ranked feedback documents.");
+        return;
+    }
+
+    println!("Original Query: \"{}\"", expanded.original_query);
+    println!(
+        "Expansion Terms Extracted (Top {}):",
+        expanded.expansion_terms.len()
+    );
+    for (term, score) in &expanded.expansion_terms {
+        println!("  • {:<16} (Rocchio feedback score: {:.4})", term, score);
+    }
+    println!(
+        "\nReformulated Query String:\n  \"{}\"\n",
+        expanded.to_query_string()
+    );
+}
+
+fn handle_prf_search(
+    index: &InvertedIndex,
+    doc_store: &HashMap<DocId, DocumentEntry>,
+    query: &str,
+) {
+    let bm25_params = BM25Params::default();
+    let prf_params = PrfParams::default();
+
+    let start = Instant::now();
+    let expanded = expand_query_bm25(index, query, &bm25_params, &prf_params);
+    let results = rank_bm25_with_prf(index, query, &bm25_params, &prf_params);
+    let duration = start.elapsed();
+
+    println!(
+        "\n--- PRF Search Results for: '{}' ({} matches in {:.2?}) ---",
+        query,
+        results.len(),
+        duration
+    );
+
+    if !expanded.expansion_terms.is_empty() {
+        let terms_str = expanded
+            .expansion_terms
+            .iter()
+            .map(|(t, s)| format!("{}:{:.2}", t, s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("💡 PRF Expansion Terms: [{}]", terms_str);
+    }
+
+    if results.is_empty() {
+        println!("No matching documents found for '{}'.", query);
         return;
     }
 

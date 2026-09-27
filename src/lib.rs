@@ -15,6 +15,7 @@ pub mod analyzer;
 pub mod compression;
 pub mod crawler;
 pub mod evaluation;
+pub mod feedback;
 pub mod graph;
 pub mod index;
 pub mod query;
@@ -44,6 +45,11 @@ pub use evaluation::{
     parse_cranfield_dataset, parse_cranfield_docs, parse_cranfield_qrels, parse_cranfield_queries,
     precision_at_k, recall_at_k, reciprocal_rank,
 };
+pub use feedback::{
+    ExpandedQuery, PrfParams, default_stop_words, expand_from_feedback_bm25,
+    expand_from_feedback_bm25f, expand_query_bm25, expand_query_bm25f, rank_bm25_with_prf,
+    rank_bm25f_with_prf,
+};
 pub use graph::{PageRankParams, WebGraph, compute_pagerank};
 pub use index::{DocId, Field, InvertedIndex, MultiFieldIndex, Posting};
 pub use query::{
@@ -51,7 +57,8 @@ pub use query::{
 };
 pub use ranking::{
     BM25FParams, BM25Params, FieldConfig, HybridBM25FParams, HybridRankingParams, ScoredDocument,
-    idf, rank_bm25, rank_bm25_with_pagerank, rank_bm25f, rank_bm25f_with_pagerank,
+    idf, rank_bm25, rank_bm25_weighted, rank_bm25_with_pagerank, rank_bm25f, rank_bm25f_weighted,
+    rank_bm25f_with_pagerank,
 };
 pub use server::{SearchEngineState, SearchServer, ServerConfig};
 pub use snippet::{HighlightFormat, SnippetConfig, generate_snippet};

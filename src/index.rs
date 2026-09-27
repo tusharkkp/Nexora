@@ -667,6 +667,21 @@ impl MultiFieldIndex {
     pub fn standard_fields() -> [Field; 3] {
         [Field::Title, Field::Body, Field::Anchor]
     }
+
+    /// Returns the number of unique documents containing `term` across any field.
+    pub fn document_frequency(&self, term: &str) -> usize {
+        let mut docs = HashSet::new();
+        for &field in &Self::standard_fields() {
+            if let Some(idx) = self.get_field_index(field) {
+                if let Some(postings) = idx.get_postings(term) {
+                    for p in postings {
+                        docs.insert(p.doc_id);
+                    }
+                }
+            }
+        }
+        docs.len()
+    }
 }
 
 impl Default for MultiFieldIndex {
