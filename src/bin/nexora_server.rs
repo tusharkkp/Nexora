@@ -14,6 +14,11 @@ fn print_usage() {
     println!("  --port <PORT>        Port to bind server (default: 8080)");
     println!("  --host <HOST>        Host address to bind server (default: 127.0.0.1)");
     println!("  --index <file.nex>   Path to saved .nex binary index and companion .meta file");
+    println!("  --crawl-seed <URL>   Seed URL to launch continuous background crawler on startup");
+    println!("  --crawl-pages <N>    Maximum pages to crawl (default: 50, 0 = unlimited)");
+    println!(
+        "  --crawl-delay <MS>   Politeness cooldown delay per domain in milliseconds (default: 500)"
+    );
     println!("  --help               Display this help text\n");
 }
 
@@ -23,6 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut port: u16 = 8080;
     let mut host = "127.0.0.1".to_string();
     let mut index_path: Option<String> = None;
+    let mut crawl_seed: Option<String> = None;
+    let mut crawl_pages: usize = 50;
+    let mut crawl_delay_ms: u64 = 500;
 
     let mut i = 0;
     while i < args.len() {
@@ -41,6 +49,18 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             "--index" if i + 1 < args.len() => {
                 index_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--crawl-seed" if i + 1 < args.len() => {
+                crawl_seed = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--crawl-pages" if i + 1 < args.len() => {
+                crawl_pages = args[i + 1].parse().unwrap_or(50);
+                i += 2;
+            }
+            "--crawl-delay" if i + 1 < args.len() => {
+                crawl_delay_ms = args[i + 1].parse().unwrap_or(500);
                 i += 2;
             }
             other => {
@@ -82,19 +102,34 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = ServerConfig { host, port };
     let server = SearchServer::new(config, state);
 
+    if let Some(ref seed) = crawl_seed {
+        let delay = std::time::Duration::from_millis(crawl_delay_ms);
+        server
+            .crawler()
+            .start(&[seed.as_str()], Some(crawl_pages), Some(delay));
+        println!(
+            "🕷 Autonomous Background Crawler launched with seed: {}",
+            seed
+        );
+    }
+
     println!("\nEndpoints:");
-    println!("  • Web Interface: http://localhost:{}", port);
+    println!("  • Web Interface:    http://localhost:{}", port);
     println!(
-        "  • Search API:    http://localhost:{}/api/search?q=<query>",
+        "  • Search API:       http://localhost:{}/api/search?q=<query>",
         port
     );
     println!(
-        "  • Suggest API:   http://localhost:{}/api/suggest?q=<prefix>",
+        "  • Suggest API:      http://localhost:{}/api/suggest?q=<prefix>",
         port
     );
-    println!("  • Index Stats:   http://localhost:{}/api/stats", port);
+    println!("  • Index Stats:      http://localhost:{}/api/stats", port);
     println!(
-        "  • Web Crawl:     POST http://localhost:{}/api/crawl?url=<url>",
+        "  • Crawler Telemetry: GET http://localhost:{}/api/crawler/status",
+        port
+    );
+    println!(
+        "  • Crawler Control:   POST http://localhost:{}/api/crawler/start?url=<url>",
         port
     );
     println!("\nPress Ctrl+C to terminate the server.\n");

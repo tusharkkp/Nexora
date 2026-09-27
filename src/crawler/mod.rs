@@ -1,3 +1,4 @@
+pub mod continuous;
 pub mod engine;
 pub mod fetcher;
 pub mod frontier;
@@ -5,6 +6,10 @@ pub mod html;
 pub mod robots;
 pub mod url;
 
+pub use continuous::{
+    ContinuousCrawler, ContinuousCrawlerConfig, CrawlSink, CrawledPageRecord, CrawlerStatus,
+    CrawlerTelemetry,
+};
 pub use engine::{CrawlConfig, CrawlSummary, CrawledDocument, Crawler};
 pub use fetcher::{HttpFetcher, HttpFetcherConfig, MockFetcher, PageFetcher};
 pub use frontier::UrlFrontier;

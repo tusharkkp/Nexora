@@ -4,7 +4,10 @@ use std::time::Instant;
 
 use tiny_http::{Header, Response, Server, StatusCode};
 
-use crate::crawler::{CrawlConfig, Crawler, HttpFetcher, UrlFrontier};
+use crate::crawler::{
+    ContinuousCrawler, ContinuousCrawlerConfig, CrawlConfig, CrawlSink, CrawledDocument, Crawler,
+    HttpFetcher, UrlFrontier,
+};
 use crate::graph::{PageRankParams, WebGraph, compute_pagerank};
 use crate::index::{DocId, InvertedIndex, MultiFieldIndex};
 use crate::ranking::{HybridBM25FParams, ScoredDocument, rank_bm25f_with_pagerank};
@@ -161,20 +164,125 @@ impl SearchEngineState {
                 .map(|d| format!("{} {}", d.title, d.body)),
         );
     }
+
+    /// Ingests a crawled document incrementally into the live search engine state.
+    ///
+    /// Updates:
+    /// - `InvertedIndex`
+    /// - `MultiFieldIndex`
+    /// - `PrefixTrie`
+    /// - `SpellChecker`
+    /// - `doc_metadata`
+    ///
+    /// Assigns and returns a new unique `DocId`.
+    pub fn ingest_crawled_page(&mut self, page: &CrawledDocument, initial_pagerank: f64) -> DocId {
+        if let Some((&existing_id, _)) = self.doc_metadata.iter().find(|(_, d)| d.url == page.url) {
+            if let Some(meta) = self.doc_metadata.get_mut(&existing_id) {
+                if !page.title.is_empty() {
+                    meta.title = page.title.clone();
+                }
+                if !page.text.is_empty() {
+                    meta.body = page.text.clone();
+                }
+            }
+            return existing_id;
+        }
+
+        let doc_id = self
+            .doc_metadata
+            .keys()
+            .copied()
+            .max()
+            .map(|max_id| max_id + 1)
+            .unwrap_or(0);
+
+        let combined = if page.title.is_empty() {
+            page.text.clone()
+        } else {
+            format!("{} {}", page.title, page.text)
+        };
+
+        self.index.add_document(doc_id, &combined);
+        self.multi_index
+            .add_document(doc_id, &page.title, &page.text, "");
+        self.trie.add_document_text(&combined);
+        self.spell_checker.add_document_text(&combined);
+        self.doc_metadata.insert(
+            doc_id,
+            DocumentMetadata {
+                doc_id,
+                url: page.url.clone(),
+                title: page.title.clone(),
+                body: page.text.clone(),
+                pagerank: initial_pagerank,
+            },
+        );
+
+        doc_id
+    }
+
+    /// Bulk updates PageRank scores for all matching documents without reindexing text.
+    pub fn update_pageranks(&mut self, scores: &HashMap<DocId, f64>) {
+        for (&doc_id, &pr) in scores {
+            if let Some(meta) = self.doc_metadata.get_mut(&doc_id) {
+                meta.pagerank = pr;
+            }
+        }
+    }
 }
 
-/// The embedded search server.
+/// Adapter bridging the background continuous crawler to the shared SearchEngineState.
+#[derive(Clone)]
+pub struct SearchEngineSink(pub Arc<RwLock<SearchEngineState>>);
+
+impl CrawlSink for SearchEngineSink {
+    fn on_document_crawled(&self, doc: &CrawledDocument) -> DocId {
+        let mut state = self.0.write().unwrap();
+        state.ingest_crawled_page(doc, 0.0)
+    }
+
+    fn on_pagerank_updated(&self, scores: &HashMap<DocId, f64>) {
+        let mut state = self.0.write().unwrap();
+        state.update_pageranks(scores);
+    }
+}
+
+/// The embedded search server with integrated continuous background crawler.
 pub struct SearchServer {
     config: ServerConfig,
     state: Arc<RwLock<SearchEngineState>>,
+    crawler: ContinuousCrawler,
 }
 
 impl SearchServer {
     pub fn new(config: ServerConfig, state: SearchEngineState) -> Self {
+        Self::with_crawler_config(config, state, ContinuousCrawlerConfig::default())
+    }
+
+    pub fn with_crawler_config(
+        config: ServerConfig,
+        state: SearchEngineState,
+        crawler_config: ContinuousCrawlerConfig,
+    ) -> Self {
+        let shared_state = Arc::new(RwLock::new(state));
+        let fetcher = Arc::new(HttpFetcher::default_client());
+        let sink = Arc::new(SearchEngineSink(Arc::clone(&shared_state)));
+        let crawler = ContinuousCrawler::new(fetcher, sink, crawler_config);
         Self {
             config,
-            state: Arc::new(RwLock::new(state)),
+            state: shared_state,
+            crawler,
         }
+    }
+
+    /// Returns a reference to the shared search engine state.
+    pub fn state(&self) -> &Arc<RwLock<SearchEngineState>> {
+        &self.state
+    }
+
+    /// Returns a reference to the active continuous background crawler.
+    pub fn crawler(&self) -> &ContinuousCrawler {
+        &self.crawler
     }
 
     /// Starts the HTTP server listener and serves requests.
@@ -243,29 +351,66 @@ impl SearchServer {
                         .with_header(header("Access-Control-Allow-Origin", "*"));
                     let _ = request.respond(response);
                 }
-                ("POST", "/api/crawl") => {
-                    let seed = params.get("url").cloned().unwrap_or_default();
-                    let max_pages = params
-                        .get("max_pages")
-                        .and_then(|p| p.parse().ok())
-                        .unwrap_or(15);
+                ("GET", "/api/crawler/status") => {
+                    let json = self.crawler.telemetry().to_json();
+                    let response = Response::from_string(json)
+                        .with_header(header("Content-Type", "application/json; charset=utf-8"))
+                        .with_header(header("Access-Control-Allow-Origin", "*"));
+                    let _ = request.respond(response);
+                }
+                ("POST", "/api/crawler/start") | ("POST", "/api/crawl") => {
+                    let raw_url = params.get("url").cloned().unwrap_or_default();
+                    let max_pages = params.get("max_pages").and_then(|p| p.parse().ok());
+                    let delay_ms = params
+                        .get("delay_ms")
+                        .and_then(|d| d.parse::<u64>().ok())
+                        .map(std::time::Duration::from_millis);
 
-                    if seed.is_empty() {
-                        let err_json = r#"{"success":false,"error":"Missing 'url' parameter"}"#;
-                        let response = Response::from_string(err_json)
-                            .with_status_code(StatusCode(400))
-                            .with_header(header("Content-Type", "application/json"));
-                        let _ = request.respond(response);
+                    let seeds: Vec<&str> = if raw_url.is_empty() {
+                        Vec::new()
                     } else {
-                        let json = {
-                            let mut lock = state.write().unwrap();
-                            handle_api_crawl(&mut lock, &seed, max_pages)
-                        };
-                        let response = Response::from_string(json)
-                            .with_header(header("Content-Type", "application/json; charset=utf-8"))
-                            .with_header(header("Access-Control-Allow-Origin", "*"));
-                        let _ = request.respond(response);
-                    }
+                        raw_url
+                            .split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    };
+
+                    let started = self.crawler.start(&seeds, max_pages, delay_ms);
+                    let telemetry = self.crawler.telemetry();
+
+                    let json = format!(
+                        r#"{{"success":{},"status":"{}","pages_visited":{},"queue_size":{}}}"#,
+                        started,
+                        telemetry.status.as_str(),
+                        telemetry.pages_visited,
+                        telemetry.queue_size
+                    );
+                    let response = Response::from_string(json)
+                        .with_header(header("Content-Type", "application/json; charset=utf-8"))
+                        .with_header(header("Access-Control-Allow-Origin", "*"));
+                    let _ = request.respond(response);
+                }
+                ("POST", "/api/crawler/pause") => {
+                    self.crawler.pause();
+                    let response = Response::from_string(r#"{"success":true,"status":"paused"}"#)
+                        .with_header(header("Content-Type", "application/json; charset=utf-8"))
+                        .with_header(header("Access-Control-Allow-Origin", "*"));
+                    let _ = request.respond(response);
+                }
+                ("POST", "/api/crawler/resume") => {
+                    self.crawler.resume();
+                    let response = Response::from_string(r#"{"success":true,"status":"running"}"#)
+                        .with_header(header("Content-Type", "application/json; charset=utf-8"))
+                        .with_header(header("Access-Control-Allow-Origin", "*"));
+                    let _ = request.respond(response);
+                }
+                ("POST", "/api/crawler/stop") => {
+                    self.crawler.stop();
+                    let response = Response::from_string(r#"{"success":true,"status":"stopped"}"#)
+                        .with_header(header("Content-Type", "application/json; charset=utf-8"))
+                        .with_header(header("Access-Control-Allow-Origin", "*"));
+                    let _ = request.respond(response);
                 }
                 _ => {
                     let not_found = r#"{"error":"Not Found"}"#;
@@ -476,7 +621,8 @@ fn handle_api_stats(state: &SearchEngineState) -> String {
     )
 }
 
-fn handle_api_crawl(state: &mut SearchEngineState, seed_url: &str, max_pages: usize) -> String {
+/// Executes a synchronous crawl session and replaces the entire index.
+pub fn handle_api_crawl(state: &mut SearchEngineState, seed_url: &str, max_pages: usize) -> String {
     let start = Instant::now();
     let mut frontier = UrlFrontier::default_polite();
     if !frontier.push(seed_url) {
@@ -893,7 +1039,7 @@ pub fn render_web_serp_html() -> String {
       color: var(--text-main);
     }
 
-    /* Modal for crawler */
+    /* Modal for continuous crawler */
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -902,7 +1048,7 @@ pub fn render_web_serp_html() -> String {
       right: 0;
       bottom: 0;
       background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(6px);
+      backdrop-filter: blur(8px);
       z-index: 200;
       align-items: center;
       justify-content: center;
@@ -912,33 +1058,206 @@ pub fn render_web_serp_html() -> String {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 16px;
-      padding: 2rem;
-      max-width: 500px;
-      width: 90%;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+      padding: 1.75rem;
+      max-width: 660px;
+      width: 92%;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
     }
 
-    .modal-title {
-      font-size: 1.25rem;
+    .crawler-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--card-border);
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      color: var(--text-main);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .crawler-pill:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(99, 102, 241, 0.4);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #64748b;
+      display: inline-block;
+      transition: all 0.3s;
+    }
+
+    .status-dot.running {
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse-dot 1.5s infinite;
+    }
+
+    .status-dot.paused {
+      background: #f59e0b;
+      box-shadow: 0 0 8px #f59e0b;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.35); opacity: 0.7; }
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      margin: 1rem 0;
+    }
+
+    .metric-card {
+      background: var(--bg-dark);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 0.75rem;
+      text-align: center;
+    }
+
+    .metric-num {
+      font-size: 1.35rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .metric-label {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-top: 0.25rem;
+    }
+
+    .crawler-ticker {
+      background: rgba(99, 102, 241, 0.08);
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      border-radius: 8px;
+      padding: 0.6rem 0.9rem;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .btn-warning {
+      background: rgba(245, 158, 11, 0.15);
+      border-color: rgba(245, 158, 11, 0.4);
+      color: #fbbf24;
+    }
+
+    .btn-warning:hover {
+      background: rgba(245, 158, 11, 0.25);
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #f87171;
+    }
+
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.25);
+    }
+
+    .feed-container {
+      max-height: 180px;
+      overflow-y: auto;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--bg-dark);
+    }
+
+    .feed-item {
+      padding: 0.55rem 0.8rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.82rem;
+    }
+
+    .feed-item:last-child {
+      border-bottom: none;
+    }
+
+    .feed-item:hover {
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .feed-title {
+      color: #93c5fd;
+      cursor: pointer;
+      text-decoration: none;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 320px;
+    }
+
+    .feed-title:hover {
+      text-decoration: underline;
+      color: #bfdbfe;
+    }
+
+    .feed-badge {
+      font-size: 0.7rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
       font-weight: 600;
-      margin-bottom: 1.25rem;
+    }
+
+    .feed-badge-indexed {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .feed-badge-disallowed {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .feed-badge-failed {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
     }
 
     .form-group {
-      margin-bottom: 1.25rem;
+      margin-bottom: 1rem;
     }
 
     .form-label {
       display: block;
-      font-size: 0.85rem;
-      margin-bottom: 0.4rem;
+      font-size: 0.82rem;
+      margin-bottom: 0.35rem;
       color: var(--text-muted);
     }
 
     .form-input {
       width: 100%;
-      padding: 0.75rem 1rem;
-      font-size: 0.95rem;
+      padding: 0.65rem 0.85rem;
+      font-size: 0.9rem;
       font-family: inherit;
       background: var(--bg-dark);
       border: 1px solid var(--card-border);
@@ -949,13 +1268,6 @@ pub fn render_web_serp_html() -> String {
     .form-input:focus {
       outline: none;
       border-color: var(--accent);
-    }
-
-    .modal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 0.75rem;
-      margin-top: 1.5rem;
     }
   </style>
 </head>
@@ -968,9 +1280,13 @@ pub fn render_web_serp_html() -> String {
     </a>
     <div class="header-actions">
       <span id="stats-badge" style="font-size:0.85rem; color: var(--text-dim);">Loading stats...</span>
+      <div id="crawler-pill" class="crawler-pill" onclick="openCrawlModal()" title="View autonomous crawler status & controls">
+        <span id="crawler-dot" class="status-dot"></span>
+        <span id="crawler-pill-text">Crawler: Idle</span>
+      </div>
       <button class="btn btn-primary" onclick="openCrawlModal()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
-        Crawl Web
+        Live Crawler
       </button>
     </div>
   </header>
@@ -1006,21 +1322,71 @@ pub fn render_web_serp_html() -> String {
     </div>
   </main>
 
-  <!-- Crawl Modal -->
+  <!-- Continuous Crawler Modal -->
   <div id="crawl-modal" class="modal-backdrop">
     <div class="modal-card">
-      <h3 class="modal-title">Live Web Crawler & PageRank Ingestion</h3>
-      <div class="form-group">
-        <label class="form-label">Seed URL to Crawl</label>
-        <input type="url" id="crawl-url" class="form-input" placeholder="https://example.com" value="https://example.com" />
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+        <h3 style="font-size:1.25rem; font-weight:600; margin:0;">🕷 Autonomous Background Crawler</h3>
+        <button class="btn" style="padding:0.25rem 0.6rem;" onclick="closeCrawlModal()">✕</button>
       </div>
-      <div class="form-group">
-        <label class="form-label">Max Pages to Crawl</label>
-        <input type="number" id="crawl-pages" class="form-input" value="10" min="1" max="50" />
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0; margin-bottom:0.75rem;">
+        Self-updating crawler traverses links, ingests pages into the index in real-time, and recalculates PageRank across the web graph.
+      </p>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div id="tele-pages" class="metric-num" style="color:#10b981;">0</div>
+          <div class="metric-label">Pages Crawled</div>
+        </div>
+        <div class="metric-card">
+          <div id="tele-queue" class="metric-num" style="color:#818cf8;">0</div>
+          <div class="metric-label">Queue Size</div>
+        </div>
+        <div class="metric-card">
+          <div id="tele-disallowed" class="metric-num" style="color:#fbbf24;">0</div>
+          <div class="metric-label">Disallowed</div>
+        </div>
+        <div class="metric-card">
+          <div id="tele-failed" class="metric-num" style="color:#f87171;">0</div>
+          <div class="metric-label">Failed</div>
+        </div>
       </div>
-      <div class="modal-actions">
-        <button class="btn" onclick="closeCrawlModal()">Cancel</button>
-        <button id="start-crawl-btn" class="btn btn-primary" onclick="submitCrawl()">Start Ingestion</button>
+
+      <div id="crawler-ticker" class="crawler-ticker">
+        <b id="ticker-status" style="color:#94a3b8;">IDLE</b>
+        <span id="ticker-url" style="color:var(--text-muted);">Frontier ready for seeds</span>
+      </div>
+
+      <div style="display:grid; grid-template-columns: 2fr 1fr 1fr; gap:0.75rem; margin-bottom:0.85rem;">
+        <div>
+          <label class="form-label">Seed URLs (comma-separated)</label>
+          <input type="text" id="crawl-url" class="form-input" placeholder="https://example.com" value="https://example.com" />
+        </div>
+        <div>
+          <label class="form-label">Max Pages</label>
+          <input type="number" id="crawl-pages" class="form-input" value="15" min="1" max="500" />
+        </div>
+        <div>
+          <label class="form-label">Delay (ms)</label>
+          <input type="number" id="crawl-delay" class="form-input" value="400" min="50" step="50" />
+        </div>
+      </div>
+
+      <div style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+        <button id="btn-start" class="btn btn-primary" onclick="crawlerStart()">▶ Start Crawl</button>
+        <button id="btn-pause" class="btn btn-warning" onclick="crawlerPause()">⏸ Pause</button>
+        <button id="btn-resume" class="btn btn-primary" onclick="crawlerResume()">▶ Resume</button>
+        <button id="btn-stop" class="btn btn-danger" onclick="crawlerStop()">⏹ Stop</button>
+      </div>
+
+      <div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+          <span class="form-label" style="margin:0;">Recent Crawled Documents Feed</span>
+          <span id="last-pr-label" style="font-size:0.75rem; color:var(--text-dim);">PageRank: active</span>
+        </div>
+        <div id="crawler-feed" class="feed-container">
+          <div style="padding:1.5rem; text-align:center; color:var(--text-dim); font-size:0.85rem;">No recent crawls in active session. Click Start to begin.</div>
+        </div>
       </div>
     </div>
   </div>
@@ -1033,19 +1399,24 @@ pub fn render_web_serp_html() -> String {
     const resultsCount = document.getElementById('results-count');
     const didYouMeanContainer = document.getElementById('did-you-mean-container');
     const statsBadge = document.getElementById('stats-badge');
+    const crawlerDot = document.getElementById('crawler-dot');
+    const crawlerPillText = document.getElementById('crawler-pill-text');
 
     let debounceTimer = null;
     let selectedIndex = -1;
 
     // Load initial stats
-    fetch('/api/stats')
-      .then(res => res.json())
-      .then(stats => {
-        statsBadge.textContent = `${stats.total_documents} docs · ${stats.vocabulary_size} terms`;
-      })
-      .catch(() => {
-        statsBadge.textContent = 'Nexora Engine';
-      });
+    function refreshStats() {
+      fetch('/api/stats')
+        .then(res => res.json())
+        .then(stats => {
+          statsBadge.textContent = `${stats.total_documents} docs · ${stats.vocabulary_size} terms`;
+        })
+        .catch(() => {
+          statsBadge.textContent = 'Nexora Engine';
+        });
+    }
+    refreshStats();
 
     // Handle Input Typing & Autocomplete
     queryInput.addEventListener('input', (e) => {
@@ -1058,7 +1429,6 @@ pub fn render_web_serp_html() -> String {
       }
 
       debounceTimer = setTimeout(() => {
-        // Fetch suggestions for last word typed
         const words = q.split(/\s+/);
         const lastWord = words[words.length - 1];
 
@@ -1087,7 +1457,6 @@ pub fn render_web_serp_html() -> String {
         
         const fullTerm = prefixBefore ? `${prefixBefore} ${item.term}` : item.term;
         
-        // Highlight prefix in item
         const termSpan = document.createElement('span');
         termSpan.className = 'autocomplete-term';
         termSpan.innerHTML = item.term.replace(new RegExp(`^(${escapeRegExp(currentPrefix)})`, 'i'), '<mark>$1</mark>');
@@ -1115,10 +1484,9 @@ pub fn render_web_serp_html() -> String {
       return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
-    // Keyboard navigation in autocomplete dropdown
     queryInput.addEventListener('keydown', (e) => {
       const items = autocomplete.querySelectorAll('.autocomplete-item');
-      if (autocomplete.style.display === 'block' && items.len > 0) {
+      if (autocomplete.style.display === 'block' && items.length > 0) {
         if (e.key === 'ArrowDown') {
           e.preventDefault();
           selectedIndex = (selectedIndex + 1) % items.length;
@@ -1223,7 +1591,7 @@ pub fn render_web_serp_html() -> String {
 
             const snippet = document.createElement('div');
             snippet.className = 'result-snippet';
-            snippet.innerHTML = item.snippet; // Snippet contains sanitized <mark class="highlight"> tags
+            snippet.innerHTML = item.snippet;
             card.appendChild(snippet);
 
             resultsContainer.appendChild(card);
@@ -1240,6 +1608,12 @@ pub fn render_web_serp_html() -> String {
       performSearch(q);
     }
 
+    function searchDoc(title) {
+      closeCrawlModal();
+      queryInput.value = title;
+      performSearch(title);
+    }
+
     function escapeHtml(str) {
       return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
@@ -1247,41 +1621,117 @@ pub fn render_web_serp_html() -> String {
     // Modal logic
     function openCrawlModal() {
       document.getElementById('crawl-modal').style.display = 'flex';
+      pollCrawlerTelemetry();
     }
 
     function closeCrawlModal() {
       document.getElementById('crawl-modal').style.display = 'none';
     }
 
-    function submitCrawl() {
+    // Live Continuous Crawler Controls & Telemetry
+    function updateCrawlerUI(tele) {
+      document.getElementById('tele-pages').textContent = tele.pages_visited;
+      document.getElementById('tele-queue').textContent = tele.queue_size;
+      document.getElementById('tele-disallowed').textContent = tele.pages_disallowed;
+      document.getElementById('tele-failed').textContent = tele.pages_failed;
+
+      crawlerDot.className = 'status-dot';
+      const tickerStatus = document.getElementById('ticker-status');
+      const tickerUrl = document.getElementById('ticker-url');
+
+      if (tele.status === 'running') {
+        crawlerDot.classList.add('running');
+        crawlerPillText.textContent = `Crawler: Running (${tele.pages_visited} indexed)`;
+        tickerStatus.textContent = 'RUNNING';
+        tickerStatus.style.color = '#10b981';
+        tickerUrl.textContent = tele.current_url || 'Fetching next URL from queue...';
+      } else if (tele.status === 'paused') {
+        crawlerDot.classList.add('paused');
+        crawlerPillText.textContent = 'Crawler: Paused';
+        tickerStatus.textContent = 'PAUSED';
+        tickerStatus.style.color = '#fbbf24';
+        tickerUrl.textContent = 'Worker paused; queue preserved.';
+      } else {
+        crawlerPillText.textContent = tele.pages_visited > 0 ? `Crawler: Idle (${tele.pages_visited} docs)` : 'Crawler: Idle';
+        tickerStatus.textContent = 'IDLE';
+        tickerStatus.style.color = '#94a3b8';
+        tickerUrl.textContent = 'Frontier ready for seeds.';
+      }
+
+      if (tele.last_pagerank_update) {
+        document.getElementById('last-pr-label').textContent = 'PageRank: freshly computed';
+      }
+
+      // Render recent crawled pages feed
+      const feedContainer = document.getElementById('crawler-feed');
+      if (tele.recent_pages && tele.recent_pages.length > 0) {
+        feedContainer.innerHTML = '';
+        tele.recent_pages.forEach(p => {
+          const item = document.createElement('div');
+          item.className = 'feed-item';
+
+          let statusBadgeClass = 'feed-badge-indexed';
+          if (p.status === 'Disallowed') statusBadgeClass = 'feed-badge-disallowed';
+          if (p.status === 'Failed') statusBadgeClass = 'feed-badge-failed';
+
+          item.innerHTML = `
+            <div style="display:flex; align-items:center; gap:0.5rem; overflow:hidden;">
+              <span class="badge badge-score" style="font-size:0.7rem;">#${p.doc_id}</span>
+              <a class="feed-title" onclick="searchDoc('${escapeHtml(p.title)}')" title="Click to search: ${escapeHtml(p.title)}">${escapeHtml(p.title)}</a>
+              <span style="font-size:0.75rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px;">${escapeHtml(p.url)}</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:0.5rem; flex-shrink:0;">
+              <span style="font-size:0.72rem; color:var(--text-dim);">${p.outgoing_links_count} links</span>
+              <span class="feed-badge ${statusBadgeClass}">${p.status}</span>
+            </div>
+          `;
+          feedContainer.appendChild(item);
+        });
+      }
+
+      refreshStats();
+    }
+
+    function pollCrawlerTelemetry() {
+      fetch('/api/crawler/status')
+        .then(res => res.json())
+        .then(tele => {
+          updateCrawlerUI(tele);
+        })
+        .catch(() => {});
+    }
+
+    // Auto poll every 1500ms
+    setInterval(pollCrawlerTelemetry, 1500);
+
+    function crawlerStart() {
       const url = document.getElementById('crawl-url').value.trim();
       const pages = document.getElementById('crawl-pages').value;
-      const btn = document.getElementById('start-crawl-btn');
+      const delay = document.getElementById('crawl-delay').value;
 
-      if (!url) return;
-
-      btn.disabled = true;
-      btn.textContent = 'Crawling & Computing PageRank...';
-
-      fetch(`/api/crawl?url=${encodeURIComponent(url)}&max_pages=${pages}`, { method: 'POST' })
+      fetch(`/api/crawler/start?url=${encodeURIComponent(url)}&max_pages=${pages}&delay_ms=${delay}`, { method: 'POST' })
         .then(res => res.json())
         .then(data => {
-          btn.disabled = false;
-          btn.textContent = 'Start Ingestion';
-          closeCrawlModal();
-
-          if (data.success) {
-            alert(`Crawl completed in ${data.took_ms.toFixed(0)} ms! Visited ${data.pages_visited} pages and discovered ${data.links_discovered} links.`);
-            location.reload();
-          } else {
-            alert(`Crawl failed: ${data.error}`);
-          }
+          pollCrawlerTelemetry();
         })
         .catch(err => {
-          btn.disabled = false;
-          btn.textContent = 'Start Ingestion';
-          alert(`Crawl request failed: ${err.message}`);
+          alert(`Failed to start crawler: ${err.message}`);
         });
+    }
+
+    function crawlerPause() {
+      fetch('/api/crawler/pause', { method: 'POST' })
+        .then(() => pollCrawlerTelemetry());
+    }
+
+    function crawlerResume() {
+      fetch('/api/crawler/resume', { method: 'POST' })
+        .then(() => pollCrawlerTelemetry());
+    }
+
+    function crawlerStop() {
+      fetch('/api/crawler/stop', { method: 'POST' })
+        .then(() => pollCrawlerTelemetry());
     }
   </script>
 </body>
@@ -1331,5 +1781,47 @@ mod tests {
         assert!(json.contains("\"prefix\":\"sea\""));
         assert!(json.contains("\"suggestions\":["));
         assert!(json.contains("search"));
+    }
+
+    #[test]
+    fn test_incremental_ingest_crawled_page() {
+        let mut state = SearchEngineState::default_demo();
+        let initial_doc_count = state.index.total_documents();
+
+        let crawled = CrawledDocument {
+            doc_id: 0,
+            url: "https://nexora.dev/blog/autonomous-crawler".to_string(),
+            title: "Autonomous Web Crawling and Incremental Indexing".to_string(),
+            text: "Nexora features continuous real-time crawling with zero index downtime and live PageRank recomputation.".to_string(),
+            outgoing_links: vec!["https://nexora.dev/docs/inverted-index".to_string()],
+        };
+
+        let new_id = state.ingest_crawled_page(&crawled, 0.45);
+        assert_eq!(state.index.total_documents(), initial_doc_count + 1);
+        assert_eq!(
+            state.doc_metadata.get(&new_id).unwrap().title,
+            "Autonomous Web Crawling and Incremental Indexing"
+        );
+        assert_eq!(state.doc_metadata.get(&new_id).unwrap().pagerank, 0.45);
+
+        // Immediate search retrieval
+        let json = handle_api_search(&state, "autonomous crawling", 5);
+        assert!(json.contains("Autonomous Web Crawling"));
+
+        // Immediate autocomplete suggestion
+        let suggest_json = handle_api_suggest(&state, "auton", 5);
+        assert!(suggest_json.contains("autonomous"));
+    }
+
+    #[test]
+    fn test_update_pageranks_in_state() {
+        let mut state = SearchEngineState::default_demo();
+        let mut new_scores = HashMap::new();
+        new_scores.insert(0, 0.99);
+        new_scores.insert(1, 0.88);
+
+        state.update_pageranks(&new_scores);
+        assert_eq!(state.doc_metadata.get(&0).unwrap().pagerank, 0.99);
+        assert_eq!(state.doc_metadata.get(&1).unwrap().pagerank, 0.88);
     }
 }

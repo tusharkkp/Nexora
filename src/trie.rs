@@ -277,6 +277,69 @@ impl PrefixTrie {
         }
     }
 
+    /// Incrementally updates the trie with unigrams and phrases extracted from a new document.
+    pub fn add_document_text(&mut self, text: &str) {
+        self.add_document_text_with_weight(text, 1, 3);
+    }
+
+    /// Incrementally updates the trie with custom term frequency weight and max phrase length.
+    pub fn add_document_text_with_weight(&mut self, text: &str, weight: u64, max_n: usize) {
+        let tokens = tokenize(text);
+        if tokens.is_empty() {
+            return;
+        }
+
+        // 1. Insert unigrams
+        for token in &tokens {
+            if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if token.text.len() >= 2 {
+                self.insert(&token.text, weight, 1);
+            }
+        }
+
+        // 2. Extract contiguous n-gram phrases (n = 2..=max_n) respecting sentence boundaries
+        for n in 2..=max_n {
+            for window in tokens.windows(n) {
+                let mut cross_boundary = false;
+                for pair in window.windows(2) {
+                    let prev_end = pair[0].end_offset;
+                    let next_start = pair[1].start_offset;
+                    if next_start > prev_end && next_start <= text.len() {
+                        let gap = &text[prev_end..next_start];
+                        if gap
+                            .chars()
+                            .any(|c| c == '.' || c == '!' || c == '?' || c == '\n')
+                        {
+                            cross_boundary = true;
+                            break;
+                        }
+                    }
+                }
+
+                if cross_boundary {
+                    continue;
+                }
+
+                let all_valid = window.iter().all(|t| {
+                    !t.text.starts_with("http")
+                        && !t.text.chars().all(|c| c.is_ascii_digit())
+                        && t.text.len() >= 2
+                });
+
+                if all_valid {
+                    let phrase = window
+                        .iter()
+                        .map(|t| t.text.as_str())
+                        .collect::<Vec<&str>>()
+                        .join(" ");
+                    self.insert(&phrase, weight, 1);
+                }
+            }
+        }
+    }
+
     /// Constructs a `PrefixTrie` from raw document texts, extracting unigrams and 2-to-3-word phrases.
     pub fn from_documents<I, S>(documents: I) -> Self
     where
@@ -294,62 +357,7 @@ impl PrefixTrie {
     {
         let mut trie = Self::new();
         for doc in documents {
-            let text = doc.as_ref();
-            let tokens = tokenize(text);
-            if tokens.is_empty() {
-                continue;
-            }
-
-            // 1. Insert unigrams
-            for token in &tokens {
-                if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit())
-                {
-                    continue;
-                }
-                if token.text.len() >= 2 {
-                    trie.insert(&token.text, 1, 1);
-                }
-            }
-
-            // 2. Extract contiguous n-gram phrases (n = 2..=max_n) respecting sentence boundaries
-            for n in 2..=max_n {
-                for window in tokens.windows(n) {
-                    let mut cross_boundary = false;
-                    for pair in window.windows(2) {
-                        let prev_end = pair[0].end_offset;
-                        let next_start = pair[1].start_offset;
-                        if next_start > prev_end && next_start <= text.len() {
-                            let gap = &text[prev_end..next_start];
-                            if gap
-                                .chars()
-                                .any(|c| c == '.' || c == '!' || c == '?' || c == '\n')
-                            {
-                                cross_boundary = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if cross_boundary {
-                        continue;
-                    }
-
-                    let all_valid = window.iter().all(|t| {
-                        !t.text.starts_with("http")
-                            && !t.text.chars().all(|c| c.is_ascii_digit())
-                            && t.text.len() >= 2
-                    });
-
-                    if all_valid {
-                        let phrase = window
-                            .iter()
-                            .map(|t| t.text.as_str())
-                            .collect::<Vec<&str>>()
-                            .join(" ");
-                        trie.insert(&phrase, 1, 1);
-                    }
-                }
-            }
+            trie.add_document_text_with_weight(doc.as_ref(), 1, max_n);
         }
         trie
     }

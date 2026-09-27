@@ -127,6 +127,20 @@ impl SpellChecker {
     }
 
     /// Builds a spell checker by tokenizing a collection of document texts.
+    /// Incrementally updates the spell checker vocabulary from a document's text.
+    pub fn add_document_text(&mut self, text: &str) {
+        let tokens = tokenize(text);
+        for token in tokens {
+            if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if token.text.len() >= 2 {
+                self.add_word(&token.text, 1);
+            }
+        }
+    }
+
+    /// Builds a spell checker by tokenizing a collection of document texts.
     /// Preserves full un-stemmed natural words (e.g. "engine", "systems").
     pub fn from_documents<I, S>(documents: I) -> Self
     where
@@ -135,17 +149,7 @@ impl SpellChecker {
     {
         let mut checker = Self::new();
         for doc in documents {
-            let tokens = tokenize(doc.as_ref());
-            for token in tokens {
-                // Ignore URLs, pure numbers, and very short tokens (< 2 chars)
-                if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit())
-                {
-                    continue;
-                }
-                if token.text.len() >= 2 {
-                    checker.add_word(&token.text, 1);
-                }
-            }
+            checker.add_document_text(doc.as_ref());
         }
         checker
     }

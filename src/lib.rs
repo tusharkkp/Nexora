@@ -34,8 +34,9 @@ pub use compression::{
     encode_vbyte,
 };
 pub use crawler::{
-    CrawlConfig, CrawlSummary, CrawledDocument, Crawler, ExtractedPage, HttpFetcher,
-    HttpFetcherConfig, MockFetcher, PageFetcher, ParsedUrl, RobotsTxt, UrlFrontier,
+    ContinuousCrawler, ContinuousCrawlerConfig, CrawlConfig, CrawlSink, CrawlSummary,
+    CrawledDocument, CrawledPageRecord, Crawler, CrawlerStatus, CrawlerTelemetry, ExtractedPage,
+    HttpFetcher, HttpFetcherConfig, MockFetcher, PageFetcher, ParsedUrl, RobotsTxt, UrlFrontier,
     decode_html_entities, extract_page, normalize_url, parse_url, resolve_relative_url,
 };
 pub use evaluation::{
@@ -60,7 +61,7 @@ pub use ranking::{
     idf, rank_bm25, rank_bm25_weighted, rank_bm25_with_pagerank, rank_bm25f, rank_bm25f_weighted,
     rank_bm25f_with_pagerank,
 };
-pub use server::{SearchEngineState, SearchServer, ServerConfig};
+pub use server::{SearchEngineSink, SearchEngineState, SearchServer, ServerConfig};
 pub use snippet::{HighlightFormat, SnippetConfig, generate_snippet};
 pub use spelling::{SpellChecker, Suggestion, damerau_levenshtein};
 pub use stemmer::stem;

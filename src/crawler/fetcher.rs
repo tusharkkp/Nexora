@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// This abstraction allows the crawler engine to remain completely decoupled
 /// from the underlying network transport (e.g. mock testbeds, local disk files,
 /// or production HTTP clients like `ureq` / `reqwest`).
-pub trait PageFetcher {
+pub trait PageFetcher: Send + Sync {
     /// Fetches the raw HTML content for a given URL.
     ///
     /// Returns `Ok(html_content)` on success, or `Err(error_message)` on failure.
