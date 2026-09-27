@@ -106,7 +106,11 @@ pub fn tokenize(text: &str) -> Vec<Token> {
 
                 // Strip trailing punctuation like '.' or ',' from the end of the URL
                 // e.g. "Visit https://nexora.org." -> URL shouldn't include the sentence period
-                while word.ends_with('.') || word.ends_with(',') || word.ends_with('?') || word.ends_with('!') {
+                while word.ends_with('.')
+                    || word.ends_with(',')
+                    || word.ends_with('?')
+                    || word.ends_with('!')
+                {
                     word.pop();
                     end_byte -= 1;
                 }
@@ -175,9 +179,36 @@ pub fn tokenize(text: &str) -> Vec<Token> {
 fn is_standalone_punctuation(ch: char) -> bool {
     matches!(
         ch,
-        '!' | '"' | '#' | '$' | '%' | '&' | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/'
-            | ':' | ';' | '<' | '=' | '>' | '?' | '@' | '[' | '\\' | ']' | '^' | '_' | '`'
-            | '{' | '|' | '}' | '~'
+        '!' | '"'
+            | '#'
+            | '$'
+            | '%'
+            | '&'
+            | '('
+            | ')'
+            | '*'
+            | '+'
+            | ','
+            | '-'
+            | '.'
+            | '/'
+            | ':'
+            | ';'
+            | '<'
+            | '='
+            | '>'
+            | '?'
+            | '@'
+            | '['
+            | '\\'
+            | ']'
+            | '^'
+            | '_'
+            | '`'
+            | '{'
+            | '|'
+            | '}'
+            | '~'
     )
 }
 
@@ -227,7 +258,17 @@ mod tests {
         let words: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(
             words,
-            vec!["Version", "2", "has", "3.1415", "and", "runs", "on", "192.168.1.1", "now"]
+            vec![
+                "Version",
+                "2",
+                "has",
+                "3.1415",
+                "and",
+                "runs",
+                "on",
+                "192.168.1.1",
+                "now"
+            ]
         );
     }
 
@@ -264,6 +305,9 @@ mod tests {
 
         // Verification: slicing original text using token offsets recovers exact substring
         assert_eq!(&text[tokens[0].start_offset..tokens[0].end_offset], "fast");
-        assert_eq!(&text[tokens[1].start_offset..tokens[1].end_offset], "runner");
+        assert_eq!(
+            &text[tokens[1].start_offset..tokens[1].end_offset],
+            "runner"
+        );
     }
 }

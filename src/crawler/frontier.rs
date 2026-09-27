@@ -204,7 +204,9 @@ mod tests {
 
         // Second pop: example.com is now cooling down (100ms delay).
         // But rust-lang.org is a DIFFERENT domain, so it must pop immediately!
-        let second = frontier.pop_polite().expect("Second domain should succeed immediately");
+        let second = frontier
+            .pop_polite()
+            .expect("Second domain should succeed immediately");
         assert_eq!(second, "https://rust-lang.org/index");
 
         // Third pop: example.com is still cooling down; pop_polite returns None without waiting
@@ -214,7 +216,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(110));
 
         // Now example.com is ready again!
-        let third = frontier.pop_polite().expect("Third pop should succeed after cooldown");
+        let third = frontier
+            .pop_polite()
+            .expect("Third pop should succeed after cooldown");
         assert_eq!(third, "https://example.com/page2");
 
         // Frontier is now completely empty

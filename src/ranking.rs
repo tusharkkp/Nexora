@@ -219,7 +219,8 @@ impl Default for BM25FParams {
 impl BM25FParams {
     /// Sets or overrides the configuration for a specific field.
     pub fn set_field(&mut self, field: Field, weight: f64, b: f64) -> &mut Self {
-        self.field_configs.insert(field, FieldConfig::new(weight, b));
+        self.field_configs
+            .insert(field, FieldConfig::new(weight, b));
         self
     }
 }
@@ -311,7 +312,8 @@ pub fn rank_bm25f(
             }
 
             if tf_tilde > 0.0 {
-                let term_score = term_idf * ((tf_tilde * (params.k1 + 1.0)) / (params.k1 + tf_tilde));
+                let term_score =
+                    term_idf * ((tf_tilde * (params.k1 + 1.0)) / (params.k1 + tf_tilde));
                 *scores.entry(doc_id).or_insert(0.0) += term_score;
             }
         }
@@ -483,7 +485,12 @@ mod tests {
     fn test_bm25f_title_boost() {
         let mut multi = MultiFieldIndex::new();
         // Doc 0: Has "rust" in title, none in body
-        multi.add_document(0, "Rust Programming", "Learn systems programming and safety", "");
+        multi.add_document(
+            0,
+            "Rust Programming",
+            "Learn systems programming and safety",
+            "",
+        );
         // Doc 1: Has "rust" 3 times in body, but title is unrelated
         multi.add_document(
             1,
@@ -536,4 +543,3 @@ mod tests {
         assert!(results[0].score > results[1].score);
     }
 }
-

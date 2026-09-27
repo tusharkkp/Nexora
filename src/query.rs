@@ -403,7 +403,10 @@ mod tests {
         // Doc 2
         index.add_document(2, "Python is an interpreted programming language");
         // Doc 3
-        index.add_document(3, "Modern web search engines use inverted index data structures");
+        index.add_document(
+            3,
+            "Modern web search engines use inverted index data structures",
+        );
         // Doc 4
         index.add_document(4, "Web crawler systematically explores web pages and links");
         index
@@ -411,7 +414,8 @@ mod tests {
 
     #[test]
     fn test_lexer_tokens() {
-        let tokens = tokenize_query("(rust OR python) AND \"memory safety\" AND NOT legacy").unwrap();
+        let tokens =
+            tokenize_query("(rust OR python) AND \"memory safety\" AND NOT legacy").unwrap();
         assert_eq!(
             tokens,
             vec![

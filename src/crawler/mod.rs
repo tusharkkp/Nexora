@@ -8,9 +8,6 @@ pub mod url;
 pub use engine::{CrawlConfig, CrawlSummary, CrawledDocument, Crawler};
 pub use fetcher::{HttpFetcher, HttpFetcherConfig, MockFetcher, PageFetcher};
 pub use frontier::UrlFrontier;
-pub use html::{decode_html_entities, extract_page, ExtractedPage};
-pub use robots::{pattern_matches, AgentGroup, RobotsTxt, Rule, RuleType};
-pub use url::{normalize_url, parse_url, resolve_relative_url, ParsedUrl};
-
-
-
+pub use html::{ExtractedPage, decode_html_entities, extract_page};
+pub use robots::{AgentGroup, RobotsTxt, Rule, RuleType, pattern_matches};
+pub use url::{ParsedUrl, normalize_url, parse_url, resolve_relative_url};

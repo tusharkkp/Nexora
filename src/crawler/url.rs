@@ -187,12 +187,7 @@ pub fn resolve_relative_url(base_url: &str, relative: &str) -> Result<String, &'
 
     // 5. Query-only: `?page=2`
     if rel.starts_with('?') {
-        let base_no_query = format!(
-            "{}://{}{}",
-            base.scheme,
-            base.host_key(),
-            base.path
-        );
+        let base_no_query = format!("{}://{}{}", base.scheme, base.host_key(), base.path);
         return normalize_url(&format!("{}{}", base_no_query, rel));
     }
 
@@ -332,10 +327,7 @@ mod tests {
     #[test]
     fn test_fragment_stripping() {
         let raw = "https://example.com/page.html#section-2";
-        assert_eq!(
-            normalize_url(raw).unwrap(),
-            "https://example.com/page.html"
-        );
+        assert_eq!(normalize_url(raw).unwrap(), "https://example.com/page.html");
     }
 
     #[test]

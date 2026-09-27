@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::crawler::url::normalize_url;
+use std::collections::HashMap;
 
 /// Trait defining the interface for fetching web documents.
 ///
@@ -169,10 +169,15 @@ mod tests {
     #[test]
     fn test_mock_fetcher_retrieval_and_normalization() {
         let mut fetcher = MockFetcher::new();
-        fetcher.add_page("https://example.com/index.html#section", "<html><body>Hello World</body></html>");
+        fetcher.add_page(
+            "https://example.com/index.html#section",
+            "<html><body>Hello World</body></html>",
+        );
 
         // The URL with or without fragment should resolve to canonical URL
-        let content = fetcher.fetch("https://example.com/index.html").expect("should fetch");
+        let content = fetcher
+            .fetch("https://example.com/index.html")
+            .expect("should fetch");
         assert_eq!(content, "<html><body>Hello World</body></html>");
 
         let err = fetcher.fetch("https://example.com/missing");
@@ -186,5 +191,3 @@ mod tests {
         assert!(fetcher.config().user_agent.contains("NexoraBot"));
     }
 }
-
-

@@ -156,7 +156,11 @@ impl RobotsTxt {
         let selected_group = self
             .groups
             .iter()
-            .find(|g| g.agents.iter().any(|a| ua_lower.contains(a) || a.contains(&ua_lower)))
+            .find(|g| {
+                g.agents
+                    .iter()
+                    .any(|a| ua_lower.contains(a) || a.contains(&ua_lower))
+            })
             .or_else(|| {
                 self.groups
                     .iter()
@@ -209,7 +213,11 @@ impl RobotsTxt {
         let specific = self
             .groups
             .iter()
-            .find(|g| g.agents.iter().any(|a| ua_lower.contains(a) || a.contains(&ua_lower)))
+            .find(|g| {
+                g.agents
+                    .iter()
+                    .any(|a| ua_lower.contains(a) || a.contains(&ua_lower))
+            })
             .and_then(|g| g.crawl_delay);
 
         if specific.is_some() {
@@ -300,7 +308,10 @@ mod tests {
         // Wildcard '*'
         assert!(pattern_matches("/fish*.php", "/fish.php"));
         assert!(pattern_matches("/fish*.php", "/fish_heads/catfood.php"));
-        assert!(pattern_matches("/fish*.php", "/fish_heads/catfood.php?more"));
+        assert!(pattern_matches(
+            "/fish*.php",
+            "/fish_heads/catfood.php?more"
+        ));
         assert!(!pattern_matches("/fish*.php", "/fish.html"));
 
         // End anchor '$'
@@ -342,7 +353,10 @@ mod tests {
         assert!(robots.is_allowed("GenericBot", "/articles/index.html"));
 
         // Crawl delay
-        assert_eq!(robots.crawl_delay("GenericBot"), Some(Duration::from_millis(2500)));
+        assert_eq!(
+            robots.crawl_delay("GenericBot"),
+            Some(Duration::from_millis(2500))
+        );
 
         // NexoraBot specific rules
         assert!(!robots.is_allowed("NexoraBot", "/crawler-trap/loop"));

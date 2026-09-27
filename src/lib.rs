@@ -1,18 +1,31 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::collapsible_match,
+    clippy::too_many_arguments,
+    clippy::explicit_counter_loop,
+    clippy::needless_range_loop,
+    clippy::ptr_arg,
+    clippy::inherent_to_string,
+    clippy::useless_format,
+    clippy::empty_line_after_doc_comments,
+    clippy::len_zero
+)]
+
 pub mod analyzer;
 pub mod compression;
 pub mod crawler;
 pub mod evaluation;
 pub mod graph;
 pub mod index;
+pub mod query;
 pub mod ranking;
+pub mod server;
 pub mod snippet;
 pub mod spelling;
 pub mod stemmer;
 pub mod storage;
 pub mod tokenizer;
 pub mod trie;
-pub mod server;
-pub mod query;
 
 pub use analyzer::{Analyzer, Term};
 pub use compression::{
@@ -20,38 +33,33 @@ pub use compression::{
     encode_vbyte,
 };
 pub use crawler::{
-    decode_html_entities, extract_page, normalize_url, parse_url, resolve_relative_url,
     CrawlConfig, CrawlSummary, CrawledDocument, Crawler, ExtractedPage, HttpFetcher,
     HttpFetcherConfig, MockFetcher, PageFetcher, ParsedUrl, RobotsTxt, UrlFrontier,
+    decode_html_entities, extract_page, normalize_url, parse_url, resolve_relative_url,
 };
 pub use evaluation::{
-    compare_rankers, dcg_at_k, evaluate_bm25, evaluate_bm25f, evaluate_hybrid_pagerank, idcg_at_k,
-    ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank, BenchmarkComparison, BenchmarkMetrics,
-    QueryJudgment,
+    BenchmarkComparison, BenchmarkMetrics, CranfieldDocument, QueryJudgment, average_precision,
+    compare_rankers, dcg_at_k, evaluate_bm25, evaluate_bm25f, evaluate_bm25f_with_pagerank,
+    evaluate_hybrid_pagerank, idcg_at_k, load_cranfield_dataset, ndcg_at_k,
+    parse_cranfield_dataset, parse_cranfield_docs, parse_cranfield_qrels, parse_cranfield_queries,
+    precision_at_k, recall_at_k, reciprocal_rank,
 };
-pub use graph::{compute_pagerank, PageRankParams, WebGraph};
+pub use graph::{PageRankParams, WebGraph, compute_pagerank};
 pub use index::{DocId, Field, InvertedIndex, MultiFieldIndex, Posting};
 pub use query::{
-    execute_query, parse_query, tokenize_query, QueryNode, QueryParseError, QueryToken,
+    QueryNode, QueryParseError, QueryToken, execute_query, parse_query, tokenize_query,
 };
 pub use ranking::{
-    idf, rank_bm25, rank_bm25_with_pagerank, rank_bm25f, rank_bm25f_with_pagerank, BM25FParams,
-    BM25Params, FieldConfig, HybridBM25FParams, HybridRankingParams, ScoredDocument,
+    BM25FParams, BM25Params, FieldConfig, HybridBM25FParams, HybridRankingParams, ScoredDocument,
+    idf, rank_bm25, rank_bm25_with_pagerank, rank_bm25f, rank_bm25f_with_pagerank,
 };
 pub use server::{SearchEngineState, SearchServer, ServerConfig};
-pub use snippet::{generate_snippet, HighlightFormat, SnippetConfig};
-pub use spelling::{damerau_levenshtein, SpellChecker, Suggestion};
+pub use snippet::{HighlightFormat, SnippetConfig, generate_snippet};
+pub use spelling::{SpellChecker, Suggestion, damerau_levenshtein};
 pub use stemmer::stem;
 pub use storage::{
-    load_from_file, load_metadata_from_file, save_metadata_to_file, save_to_file, DocumentMetadata,
-    StorageError,
+    DocumentMetadata, StorageError, load_from_file, load_metadata_from_file, save_metadata_to_file,
+    save_to_file,
 };
-pub use tokenizer::{tokenize, Token};
+pub use tokenizer::{Token, tokenize};
 pub use trie::{PrefixSuggestion, PrefixTrie, TrieNode};
-
-
-
-
-
-
-

@@ -200,7 +200,8 @@ impl PrefixTrie {
         }
 
         // Min-heap to maintain top-K suggestions
-        let mut heap: BinaryHeap<std::cmp::Reverse<PrefixSuggestion>> = BinaryHeap::with_capacity(limit);
+        let mut heap: BinaryHeap<std::cmp::Reverse<PrefixSuggestion>> =
+            BinaryHeap::with_capacity(limit);
         let mut current_term = clean;
 
         self.collect_top_k(node, &mut current_term, limit, &mut heap);
@@ -301,7 +302,8 @@ impl PrefixTrie {
 
             // 1. Insert unigrams
             for token in &tokens {
-                if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit()) {
+                if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit())
+                {
                     continue;
                 }
                 if token.text.len() >= 2 {
@@ -318,7 +320,10 @@ impl PrefixTrie {
                         let next_start = pair[1].start_offset;
                         if next_start > prev_end && next_start <= text.len() {
                             let gap = &text[prev_end..next_start];
-                            if gap.chars().any(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+                            if gap
+                                .chars()
+                                .any(|c| c == '.' || c == '!' || c == '?' || c == '\n')
+                            {
                                 cross_boundary = true;
                                 break;
                             }
@@ -410,7 +415,10 @@ impl PrefixTrie {
                         let next_start = pair[1].start_offset;
                         if next_start > prev_end && next_start <= body_text.len() {
                             let gap = &body_text[prev_end..next_start];
-                            if gap.chars().any(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+                            if gap
+                                .chars()
+                                .any(|c| c == '.' || c == '!' || c == '?' || c == '\n')
+                            {
                                 cross_boundary = true;
                                 break;
                             }
@@ -566,7 +574,10 @@ mod tests {
         let suggestions = trie.suggest("search en", 5);
         assert!(!suggestions.is_empty());
         let terms: Vec<String> = suggestions.into_iter().map(|s| s.term).collect();
-        assert!(terms.contains(&"search engines".to_string()) || terms.contains(&"search engine".to_string()));
+        assert!(
+            terms.contains(&"search engines".to_string())
+                || terms.contains(&"search engine".to_string())
+        );
 
         // Exact phrase prefix "inverted in"
         let inv_suggestions = trie.suggest("inverted in", 5);

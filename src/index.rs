@@ -89,12 +89,17 @@ impl InvertedIndex {
     }
 
     /// Serializes and saves this index to a binary file at `path`.
-    pub fn save_to_file<P: AsRef<std::path::Path>>(&self, path: P) -> Result<(), crate::storage::StorageError> {
+    pub fn save_to_file<P: AsRef<std::path::Path>>(
+        &self,
+        path: P,
+    ) -> Result<(), crate::storage::StorageError> {
         crate::storage::save_to_file(self, path)
     }
 
     /// Loads and reconstructs an InvertedIndex from a binary file at `path`.
-    pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, crate::storage::StorageError> {
+    pub fn load_from_file<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<Self, crate::storage::StorageError> {
         crate::storage::load_from_file(path)
     }
 
@@ -484,7 +489,11 @@ impl InvertedIndex {
     }
 
     /// Performs Okapi BM25 relevance search using custom parameters.
-    pub fn search_bm25(&self, query: &str, params: &crate::ranking::BM25Params) -> Vec<crate::ranking::ScoredDocument> {
+    pub fn search_bm25(
+        &self,
+        query: &str,
+        params: &crate::ranking::BM25Params,
+    ) -> Vec<crate::ranking::ScoredDocument> {
         crate::ranking::rank_bm25(self, query, params)
     }
 
@@ -555,7 +564,10 @@ impl MultiFieldIndex {
         let mut fields = HashMap::new();
         fields.insert(Field::Title, InvertedIndex::with_analyzer(analyzer.clone()));
         fields.insert(Field::Body, InvertedIndex::with_analyzer(analyzer.clone()));
-        fields.insert(Field::Anchor, InvertedIndex::with_analyzer(analyzer.clone()));
+        fields.insert(
+            Field::Anchor,
+            InvertedIndex::with_analyzer(analyzer.clone()),
+        );
 
         Self {
             fields,
@@ -568,13 +580,22 @@ impl MultiFieldIndex {
     pub fn add_document(&mut self, doc_id: DocId, title: &str, body: &str, anchor: &str) {
         self.all_doc_ids.insert(doc_id);
         if !title.is_empty() {
-            self.fields.get_mut(&Field::Title).unwrap().add_document(doc_id, title);
+            self.fields
+                .get_mut(&Field::Title)
+                .unwrap()
+                .add_document(doc_id, title);
         }
         if !body.is_empty() {
-            self.fields.get_mut(&Field::Body).unwrap().add_document(doc_id, body);
+            self.fields
+                .get_mut(&Field::Body)
+                .unwrap()
+                .add_document(doc_id, body);
         }
         if !anchor.is_empty() {
-            self.fields.get_mut(&Field::Anchor).unwrap().add_document(doc_id, anchor);
+            self.fields
+                .get_mut(&Field::Anchor)
+                .unwrap()
+                .add_document(doc_id, anchor);
         }
     }
 
@@ -786,8 +807,18 @@ mod tests {
     #[test]
     fn test_multi_field_index() {
         let mut multi = MultiFieldIndex::new();
-        multi.add_document(0, "Rust Programming", "Learn fast memory safety", "rust language");
-        multi.add_document(1, "Python Tutorial", "Easy dynamic scripting", "python code");
+        multi.add_document(
+            0,
+            "Rust Programming",
+            "Learn fast memory safety",
+            "rust language",
+        );
+        multi.add_document(
+            1,
+            "Python Tutorial",
+            "Easy dynamic scripting",
+            "python code",
+        );
 
         assert_eq!(multi.total_documents(), 2);
         assert_eq!(multi.field_doc_length(Field::Title, 0), 2);
@@ -811,4 +842,3 @@ mod tests {
         assert_eq!(matches[0].doc_id, 0);
     }
 }
-

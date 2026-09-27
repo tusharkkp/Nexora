@@ -5,10 +5,10 @@ use std::time::Instant;
 use tiny_http::{Header, Response, Server, StatusCode};
 
 use crate::crawler::{CrawlConfig, Crawler, HttpFetcher, UrlFrontier};
-use crate::graph::{compute_pagerank, PageRankParams, WebGraph};
+use crate::graph::{PageRankParams, WebGraph, compute_pagerank};
 use crate::index::{DocId, InvertedIndex, MultiFieldIndex};
-use crate::ranking::{rank_bm25f_with_pagerank, HybridBM25FParams, ScoredDocument};
-use crate::snippet::{generate_snippet, HighlightFormat, SnippetConfig};
+use crate::ranking::{HybridBM25FParams, ScoredDocument, rank_bm25f_with_pagerank};
+use crate::snippet::{HighlightFormat, SnippetConfig, generate_snippet};
 use crate::spelling::SpellChecker;
 use crate::storage::DocumentMetadata;
 use crate::trie::PrefixTrie;
@@ -46,10 +46,14 @@ impl SearchEngineState {
         }
 
         let trie = PrefixTrie::from_documents(
-            doc_metadata.values().map(|d| format!("{} {}", d.title, d.body)),
+            doc_metadata
+                .values()
+                .map(|d| format!("{} {}", d.title, d.body)),
         );
         let spell_checker = SpellChecker::from_documents(
-            doc_metadata.values().map(|d| format!("{} {}", d.title, d.body)),
+            doc_metadata
+                .values()
+                .map(|d| format!("{} {}", d.title, d.body)),
         );
 
         Self {
@@ -178,7 +182,10 @@ impl SearchServer {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let server = Server::http(&addr)?;
         println!("🚀 Nexora HTTP Search Server listening on http://{}", addr);
-        println!("✨ Web SERP Interface available at: http://localhost:{}", self.config.port);
+        println!(
+            "✨ Web SERP Interface available at: http://localhost:{}",
+            self.config.port
+        );
 
         for request in server.incoming_requests() {
             let state = Arc::clone(&self.state);
@@ -238,7 +245,10 @@ impl SearchServer {
                 }
                 ("POST", "/api/crawl") => {
                     let seed = params.get("url").cloned().unwrap_or_default();
-                    let max_pages = params.get("max_pages").and_then(|p| p.parse().ok()).unwrap_or(15);
+                    let max_pages = params
+                        .get("max_pages")
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(15);
 
                     if seed.is_empty() {
                         let err_json = r#"{"success":false,"error":"Missing 'url' parameter"}"#;
@@ -366,24 +376,16 @@ fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> St
         .collect();
 
     let hybrid_f_params = HybridBM25FParams::default();
-    let mut results: Vec<ScoredDocument> = rank_bm25f_with_pagerank(
-        &state.multi_index,
-        clean,
-        &pr_map,
-        &hybrid_f_params,
-    );
+    let mut results: Vec<ScoredDocument> =
+        rank_bm25f_with_pagerank(&state.multi_index, clean, &pr_map, &hybrid_f_params);
 
     let mut did_you_mean: Option<String> = None;
 
     if results.is_empty() {
         if let Some(suggested) = state.spell_checker.suggest_query(clean) {
             did_you_mean = Some(suggested.clone());
-            results = rank_bm25f_with_pagerank(
-                &state.multi_index,
-                &suggested,
-                &pr_map,
-                &hybrid_f_params,
-            );
+            results =
+                rank_bm25f_with_pagerank(&state.multi_index, &suggested, &pr_map, &hybrid_f_params);
         }
     }
 
@@ -526,9 +528,7 @@ fn handle_api_crawl(state: &mut SearchEngineState, seed_url: &str, max_pages: us
     let took_ms = start.elapsed().as_secs_f64() * 1000.0;
     format!(
         r#"{{"success":true,"pages_visited":{},"links_discovered":{},"took_ms":{:.2}}}"#,
-        summary.pages_visited,
-        summary.links_discovered,
-        took_ms
+        summary.pages_visited, summary.links_discovered, took_ms
     )
 }
 

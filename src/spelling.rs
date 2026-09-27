@@ -41,7 +41,11 @@ pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
 
     for i in 1..=m {
         for j in 1..=n {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
 
             let deletion = dp[(i - 1) * stride + j] + 1;
             let insertion = dp[i * stride + (j - 1)] + 1;
@@ -50,7 +54,11 @@ pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
             let mut min_val = deletion.min(insertion).min(substitution);
 
             // Adjacent transposition check: a[i-1] == b[j-2] and a[i-2] == b[j-1]
-            if i > 1 && j > 1 && a_chars[i - 1] == b_chars[j - 2] && a_chars[i - 2] == b_chars[j - 1] {
+            if i > 1
+                && j > 1
+                && a_chars[i - 1] == b_chars[j - 2]
+                && a_chars[i - 2] == b_chars[j - 1]
+            {
                 let transposition = dp[(i - 2) * stride + (j - 2)] + 1;
                 min_val = min_val.min(transposition);
             }
@@ -130,7 +138,8 @@ impl SpellChecker {
             let tokens = tokenize(doc.as_ref());
             for token in tokens {
                 // Ignore URLs, pure numbers, and very short tokens (< 2 chars)
-                if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit()) {
+                if token.text.starts_with("http") || token.text.chars().all(|c| c.is_ascii_digit())
+                {
                     continue;
                 }
                 if token.text.len() >= 2 {
@@ -304,6 +313,9 @@ mod tests {
         assert_eq!(checker.suggest_query("search engine"), None);
 
         // Transposition typo: "engien" -> "engine"
-        assert_eq!(checker.suggest_query("fast engien"), Some("fast engine".to_string()));
+        assert_eq!(
+            checker.suggest_query("fast engien"),
+            Some("fast engine".to_string())
+        );
     }
 }

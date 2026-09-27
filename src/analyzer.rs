@@ -1,5 +1,5 @@
 use crate::stemmer::stem;
-use crate::tokenizer::{tokenize, Token};
+use crate::tokenizer::{Token, tokenize};
 
 /// Represents a fully analyzed, normalized term ready for index storage or query matching.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -76,7 +76,9 @@ mod tests {
         // and past tense reduction ("jumped" -> "jump")
         assert_eq!(
             words,
-            vec!["the", "quick", "brown", "fox", "jump", "over", "lazi", "dog"]
+            vec![
+                "the", "quick", "brown", "fox", "jump", "over", "lazi", "dog"
+            ]
         );
 
         // Verifies continuous positions 0 through 7
@@ -105,7 +107,14 @@ mod tests {
 
         assert_eq!(
             words,
-            vec!["server", "run", "at", "192.168.1.1", "or", "https://nexora.org/api"]
+            vec![
+                "server",
+                "run",
+                "at",
+                "192.168.1.1",
+                "or",
+                "https://nexora.org/api"
+            ]
         );
     }
 }

@@ -224,8 +224,8 @@ fn load_index_v2<R: Read>(reader: &mut R) -> Result<InvertedIndex, StorageError>
         let mut compressed_doc_ids = vec![0u8; doc_ids_len];
         reader.read_exact(&mut compressed_doc_ids)?;
 
-        let doc_ids = decompress_sorted_u32(&compressed_doc_ids)
-            .map_err(StorageError::DecompressionError)?;
+        let doc_ids =
+            decompress_sorted_u32(&compressed_doc_ids).map_err(StorageError::DecompressionError)?;
 
         if doc_ids.len() != postings_count {
             return Err(StorageError::DecompressionError(
@@ -244,10 +244,9 @@ fn load_index_v2<R: Read>(reader: &mut R) -> Result<InvertedIndex, StorageError>
             let mut tf_bytes = vec![0u8; tf_len];
             reader.read_exact(&mut tf_bytes)?;
 
-            let (term_frequency, _) =
-                decode_vbyte(&tf_bytes).ok_or(StorageError::DecompressionError(
-                    "Failed to decode term frequency in v2 index",
-                ))?;
+            let (term_frequency, _) = decode_vbyte(&tf_bytes).ok_or(
+                StorageError::DecompressionError("Failed to decode term frequency in v2 index"),
+            )?;
 
             // Read and decompress positions
             let pos_len = read_u32(reader)? as usize;
@@ -621,4 +620,3 @@ mod tests {
         assert_eq!(loaded[&2].title, "Package Registry");
     }
 }
-

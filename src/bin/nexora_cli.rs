@@ -4,12 +4,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use nexora::{
-    compare_rankers, compute_pagerank, execute_query, generate_snippet, load_from_file,
-    load_metadata_from_file, parse_query, rank_bm25_with_pagerank, save_metadata_to_file,
-    save_to_file, CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
+    CrawlConfig, Crawler, DocId, DocumentMetadata, HighlightFormat, HttpFetcher,
     HybridRankingParams, InvertedIndex, PageRankParams, PrefixTrie, QueryJudgment,
     SearchEngineState, SearchServer, ServerConfig, SnippetConfig, SpellChecker, UrlFrontier,
-    WebGraph,
+    WebGraph, compare_rankers, compute_pagerank, execute_query, generate_snippet, load_from_file,
+    load_metadata_from_file, parse_query, rank_bm25_with_pagerank, save_metadata_to_file,
+    save_to_file,
 };
 
 /// In-memory representation of an indexed document with optional URL and link authority.
@@ -83,7 +83,9 @@ fn print_cli_usage() {
 
 fn handle_cli_crawl(args: &[String]) {
     if args.is_empty() {
-        eprintln!("Error: Missing seed URL. Usage: nexora_cli crawl <seed_url> [--max-pages <N>] [--output <file.nex>]");
+        eprintln!(
+            "Error: Missing seed URL. Usage: nexora_cli crawl <seed_url> [--max-pages <N>] [--output <file.nex>]"
+        );
         std::process::exit(1);
     }
 
@@ -120,7 +122,9 @@ fn handle_cli_crawl(args: &[String]) {
 
 fn handle_cli_search(args: &[String]) {
     if args.is_empty() {
-        eprintln!("Error: Missing query string. Usage: nexora_cli search <query> [--index <file.nex>]");
+        eprintln!(
+            "Error: Missing query string. Usage: nexora_cli search <query> [--index <file.nex>]"
+        );
         std::process::exit(1);
     }
 
@@ -182,11 +186,7 @@ fn handle_cli_serve(args: &[String]) {
     start_repl_server(&index, &doc_store, port);
 }
 
-fn start_repl_server(
-    index: &InvertedIndex,
-    doc_store: &HashMap<DocId, DocumentEntry>,
-    port: u16,
-) {
+fn start_repl_server(index: &InvertedIndex, doc_store: &HashMap<DocId, DocumentEntry>, port: u16) {
     let mut metadata = HashMap::new();
     for (id, doc) in doc_store {
         metadata.insert(
@@ -208,7 +208,10 @@ fn start_repl_server(
     };
     let server = SearchServer::new(config, state);
 
-    println!("\n🌐 Starting Embedded Web Server & SERP Interface on http://localhost:{}", port);
+    println!(
+        "\n🌐 Starting Embedded Web Server & SERP Interface on http://localhost:{}",
+        port
+    );
     println!("Press Ctrl+C in terminal to stop server.\n");
 
     if let Err(e) = server.run() {
@@ -258,8 +261,14 @@ fn run_interactive_repl() {
             ":stats" => {
                 println!("\n--- Index Statistics ---");
                 println!("Total Documents:      {}", index.total_documents());
-                println!("Vocabulary Size:      {} unique terms", index.vocabulary_size());
-                println!("Average Doc Length:   {:.1} words", index.average_doc_length());
+                println!(
+                    "Vocabulary Size:      {} unique terms",
+                    index.vocabulary_size()
+                );
+                println!(
+                    "Average Doc Length:   {:.1} words",
+                    index.average_doc_length()
+                );
             }
             ":docs" => {
                 println!("\n--- Indexed Documents ---");
@@ -267,7 +276,10 @@ fn run_interactive_repl() {
                 docs.sort_by_key(|d| d.id);
                 for doc in docs {
                     if let Some(ref url) = doc.url {
-                        println!("[Doc {}] [PR: {:.4}] {} ({})", doc.id, doc.pagerank, doc.title, url);
+                        println!(
+                            "[Doc {}] [PR: {:.4}] {} ({})",
+                            doc.id, doc.pagerank, doc.title, url
+                        );
                     } else {
                         println!("[Doc {}] {}", doc.id, doc.title);
                     }
@@ -363,16 +375,26 @@ fn run_interactive_repl() {
 fn print_help() {
     println!("Commands:");
     println!("  <terms>                     Free-text search (BM25 + PageRank hybrid ranking)");
-    println!("  \"<phrase>\"                  Exact consecutive phrase search (e.g. '\"inverted index\"')");
+    println!(
+        "  \"<phrase>\"                  Exact consecutive phrase search (e.g. '\"inverted index\"')"
+    );
     println!("  <prefix>*                   Prefix wildcard search (e.g. 'rust*' or 'index*')");
-    println!("  <boolean_expression>        Boolean AST search (e.g. '(rust OR python) AND NOT memory')");
-    println!("  :suggest <prefix>           Frequency-ranked autocomplete suggestions (e.g. ':suggest sea')");
+    println!(
+        "  <boolean_expression>        Boolean AST search (e.g. '(rust OR python) AND NOT memory')"
+    );
+    println!(
+        "  :suggest <prefix>           Frequency-ranked autocomplete suggestions (e.g. ':suggest sea')"
+    );
     println!("  :query <expr>               Compile & execute structured AST query");
-    println!("  :serve [port]               Launch embedded HTTP search server & Web SERP (default: 8080)");
+    println!(
+        "  :serve [port]               Launch embedded HTTP search server & Web SERP (default: 8080)"
+    );
     println!("  :and <t1> <t2>              Boolean AND intersection");
     println!("  :or  <t1> <t2>              Boolean OR union");
     println!("  :crawl <url> [N] [out.nex]  Crawl website, calculate PageRank, and save index");
-    println!("  :benchmark                  Run Cranfield evaluation (BM25 vs PageRank comparison)");
+    println!(
+        "  :benchmark                  Run Cranfield evaluation (BM25 vs PageRank comparison)"
+    );
     println!("  :save <path>                Persist active index to binary file (.nex v2)");
     println!("  :load <path>                Load index and metadata from disk (.nex)");
     println!("  :stats                      Display index metadata and vocabulary size");
@@ -380,10 +402,7 @@ fn print_help() {
     println!("  :exit                       Exit the search engine");
 }
 
-fn run_corpus_benchmark(
-    index: &InvertedIndex,
-    doc_store: &HashMap<DocId, DocumentEntry>,
-) {
+fn run_corpus_benchmark(index: &InvertedIndex, doc_store: &HashMap<DocId, DocumentEntry>) {
     println!("\n--- Running Cranfield Evaluation Benchmark Suite ---");
 
     let benchmark = vec![
@@ -405,10 +424,7 @@ fn run_corpus_benchmark(
         ),
     ];
 
-    let pr_map: HashMap<DocId, f64> = doc_store
-        .iter()
-        .map(|(&id, d)| (id, d.pagerank))
-        .collect();
+    let pr_map: HashMap<DocId, f64> = doc_store.iter().map(|(&id, d)| (id, d.pagerank)).collect();
 
     let comparison = compare_rankers(
         index,
@@ -513,7 +529,10 @@ fn execute_crawl(
     save_metadata_to_file(&metadata_map, &meta_path)
         .map_err(|e| format!("Failed to save metadata to '{}': {}", meta_path, e))?;
 
-    println!("✔ Saved compressed index to '{}' and metadata to '{}'", output_path, meta_path);
+    println!(
+        "✔ Saved compressed index to '{}' and metadata to '{}'",
+        output_path, meta_path
+    );
 
     Ok((index, doc_store))
 }
@@ -521,8 +540,7 @@ fn execute_crawl(
 fn load_index_and_metadata(
     index_path: &str,
 ) -> Result<(InvertedIndex, HashMap<DocId, DocumentEntry>), String> {
-    let index = load_from_file(index_path)
-        .map_err(|e| format!("Index load error: {}", e))?;
+    let index = load_from_file(index_path).map_err(|e| format!("Index load error: {}", e))?;
 
     let meta_path = format!("{}.meta", index_path);
     let mut doc_store = HashMap::new();
@@ -594,10 +612,7 @@ fn handle_bm25_search(
     let start = Instant::now();
 
     // Prepare PageRank map
-    let pr_map: HashMap<DocId, f64> = doc_store
-        .iter()
-        .map(|(&id, d)| (id, d.pagerank))
-        .collect();
+    let pr_map: HashMap<DocId, f64> = doc_store.iter().map(|(&id, d)| (id, d.pagerank)).collect();
 
     let hybrid_params = HybridRankingParams::default();
     let results = rank_bm25_with_pagerank(index, query, &pr_map, &hybrid_params);
@@ -614,7 +629,9 @@ fn handle_bm25_search(
         println!("No matching documents found for '{}'.", query);
 
         let spell_checker = SpellChecker::from_documents(
-            doc_store.values().map(|d| format!("{} {}", d.title, d.body)),
+            doc_store
+                .values()
+                .map(|d| format!("{} {}", d.title, d.body)),
         );
 
         if let Some(suggestion) = spell_checker.suggest_query(query) {
@@ -628,12 +645,7 @@ fn handle_bm25_search(
                     suggestion,
                     corrected_results.len()
                 );
-                render_scored_results(
-                    &corrected_results,
-                    doc_store,
-                    &suggestion,
-                    index.analyzer(),
-                );
+                render_scored_results(&corrected_results, doc_store, &suggestion, index.analyzer());
             }
         }
         return;
@@ -745,11 +757,7 @@ fn handle_boolean_and(
     }
 }
 
-fn handle_boolean_or(
-    index: &InvertedIndex,
-    doc_store: &HashMap<DocId, DocumentEntry>,
-    args: &str,
-) {
+fn handle_boolean_or(index: &InvertedIndex, doc_store: &HashMap<DocId, DocumentEntry>, args: &str) {
     let terms: Vec<&str> = args.split_whitespace().collect();
     let start = Instant::now();
     let matches = index.search_or(&terms);
@@ -775,11 +783,7 @@ fn handle_boolean_or(
     }
 }
 
-fn handle_suggest(
-    _index: &InvertedIndex,
-    doc_store: &HashMap<DocId, DocumentEntry>,
-    prefix: &str,
-) {
+fn handle_suggest(_index: &InvertedIndex, doc_store: &HashMap<DocId, DocumentEntry>, prefix: &str) {
     if prefix.is_empty() {
         println!("Please provide a prefix. Example: :suggest sea");
         return;
@@ -788,7 +792,9 @@ fn handle_suggest(
     let start = Instant::now();
     // Build unstemmed trie from doc store texts for natural word suggestions
     let trie = PrefixTrie::from_documents(
-        doc_store.values().map(|d| format!("{} {}", d.title, d.body)),
+        doc_store
+            .values()
+            .map(|d| format!("{} {}", d.title, d.body)),
     );
     let suggestions = trie.suggest(prefix, 8);
     let duration = start.elapsed();
@@ -803,10 +809,16 @@ fn handle_suggest(
     if suggestions.is_empty() {
         println!("No suggestions starting with '{}'.", prefix);
     } else {
-        println!("| {:<20} | {:<12} | {:<12} |", "Suggestion", "Frequency", "Documents");
+        println!(
+            "| {:<20} | {:<12} | {:<12} |",
+            "Suggestion", "Frequency", "Documents"
+        );
         println!("|:{:-<20}-|-:{:-<12}:|-:{:-<12}:|", "", "", "");
         for s in suggestions {
-            println!("| {:<20} | {:<12} | {:<12} |", s.term, s.term_frequency, s.doc_frequency);
+            println!(
+                "| {:<20} | {:<12} | {:<12} |",
+                s.term, s.term_frequency, s.doc_frequency
+            );
         }
     }
 }
@@ -834,7 +846,11 @@ fn handle_prefix_search(
 
     if !matching_terms.is_empty() {
         let display_terms = if matching_terms.len() > 8 {
-            format!("{}, ... ({} total)", matching_terms[..8].join(", "), matching_terms.len())
+            format!(
+                "{}, ... ({} total)",
+                matching_terms[..8].join(", "),
+                matching_terms.len()
+            )
         } else {
             matching_terms.join(", ")
         };
@@ -850,7 +866,13 @@ fn handle_prefix_search(
     for (rank, posting) in postings.iter().enumerate() {
         if let Some(doc) = doc_store.get(&posting.doc_id) {
             let snippet = generate_snippet(&doc.body, prefix, index.analyzer(), &snippet_cfg);
-            println!("{}. [Doc {}] {} (matches: {})", rank + 1, doc.id, doc.title, posting.term_frequency);
+            println!(
+                "{}. [Doc {}] {} (matches: {})",
+                rank + 1,
+                doc.id,
+                doc.title,
+                posting.term_frequency
+            );
             if let Some(ref url) = doc.url {
                 println!("   \x1b[34m{}\x1b[0m", url);
             }
@@ -888,7 +910,8 @@ fn handle_boolean_ast_search(
             let snippet_cfg = SnippetConfig::default();
             for (rank, posting) in postings.iter().enumerate() {
                 if let Some(doc) = doc_store.get(&posting.doc_id) {
-                    let snippet = generate_snippet(&doc.body, query_str, index.analyzer(), &snippet_cfg);
+                    let snippet =
+                        generate_snippet(&doc.body, query_str, index.analyzer(), &snippet_cfg);
                     println!("{}. [Doc {}] {}", rank + 1, doc.id, doc.title);
                     if let Some(ref url) = doc.url {
                         println!("   \x1b[34m{}\x1b[0m", url);
@@ -902,4 +925,3 @@ fn handle_boolean_ast_search(
         }
     }
 }
-

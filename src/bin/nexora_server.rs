@@ -3,7 +3,7 @@ use std::env;
 use std::path::Path;
 
 use nexora::{
-    load_from_file, load_metadata_from_file, SearchEngineState, SearchServer, ServerConfig,
+    SearchEngineState, SearchServer, ServerConfig, load_from_file, load_metadata_from_file,
 };
 
 fn print_usage() {
@@ -84,10 +84,19 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     println!("\nEndpoints:");
     println!("  • Web Interface: http://localhost:{}", port);
-    println!("  • Search API:    http://localhost:{}/api/search?q=<query>", port);
-    println!("  • Suggest API:   http://localhost:{}/api/suggest?q=<prefix>", port);
+    println!(
+        "  • Search API:    http://localhost:{}/api/search?q=<query>",
+        port
+    );
+    println!(
+        "  • Suggest API:   http://localhost:{}/api/suggest?q=<prefix>",
+        port
+    );
     println!("  • Index Stats:   http://localhost:{}/api/stats", port);
-    println!("  • Web Crawl:     POST http://localhost:{}/api/crawl?url=<url>", port);
+    println!(
+        "  • Web Crawl:     POST http://localhost:{}/api/crawl?url=<url>",
+        port
+    );
     println!("\nPress Ctrl+C to terminate the server.\n");
 
     server.run()

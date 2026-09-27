@@ -1,6 +1,6 @@
 use nexora::{
-    evaluate_bm25f, rank_bm25, rank_bm25f, BM25FParams, BM25Params, InvertedIndex,
-    MultiFieldIndex, QueryJudgment,
+    BM25FParams, BM25Params, InvertedIndex, MultiFieldIndex, QueryJudgment, evaluate_bm25f,
+    rank_bm25, rank_bm25f,
 };
 
 #[test]
@@ -30,11 +30,19 @@ fn test_bm25f_vs_bm25_multi_field_benchmark() {
 
     // Doc 2: Third-party inbound anchor endorsement
     flat_index.add_document(2, "Information Retrieval Science of searching documents");
-    multi_index.add_document(2, "Information Retrieval", "Science of searching documents", "");
+    multi_index.add_document(
+        2,
+        "Information Retrieval",
+        "Science of searching documents",
+        "",
+    );
     multi_index.append_anchor_text(2, "modern web search engine");
 
     // Doc 3: Long document with incidental mention of search engine
-    let doc3_body = format!("Today I walked my dog. I used a search engine to find lunch. {}", "irrelevant filler text ".repeat(30));
+    let doc3_body = format!(
+        "Today I walked my dog. I used a search engine to find lunch. {}",
+        "irrelevant filler text ".repeat(30)
+    );
     flat_index.add_document(3, &format!("My Daily Log {}", doc3_body));
     multi_index.add_document(3, "My Daily Log", &doc3_body, "");
 
@@ -47,8 +55,14 @@ fn test_bm25f_vs_bm25_multi_field_benchmark() {
     let q1_bm25f = rank_bm25f(&multi_index, "rust", &bm25f_params);
 
     println!("Query 1: 'rust'");
-    println!("  Flat BM25 #1: Doc {} (score: {:.4})", q1_bm25[0].doc_id, q1_bm25[0].score);
-    println!("  BM25F     #1: Doc {} (score: {:.4})", q1_bm25f[0].doc_id, q1_bm25f[0].score);
+    println!(
+        "  Flat BM25 #1: Doc {} (score: {:.4})",
+        q1_bm25[0].doc_id, q1_bm25[0].score
+    );
+    println!(
+        "  BM25F     #1: Doc {} (score: {:.4})",
+        q1_bm25f[0].doc_id, q1_bm25f[0].score
+    );
 
     // In BM25F, Doc 0 decisively wins because Title weight (4.0) boosts title matches over body mentions!
     assert_eq!(q1_bm25f[0].doc_id, 0);
@@ -57,7 +71,10 @@ fn test_bm25f_vs_bm25_multi_field_benchmark() {
     // Ground truth: Doc 2 is endorsed by anchor text "modern web search engine"
     let q2_bm25f = rank_bm25f(&multi_index, "search engine", &bm25f_params);
     println!("\nQuery 2: 'search engine'");
-    println!("  BM25F #1: Doc {} (score: {:.4})", q2_bm25f[0].doc_id, q2_bm25f[0].score);
+    println!(
+        "  BM25F #1: Doc {} (score: {:.4})",
+        q2_bm25f[0].doc_id, q2_bm25f[0].score
+    );
     assert_eq!(q2_bm25f[0].doc_id, 2);
 
     // Benchmark metrics over test suite
@@ -69,7 +86,10 @@ fn test_bm25f_vs_bm25_multi_field_benchmark() {
     let metrics_bm25f = evaluate_bm25f(&multi_index, &benchmark, &bm25f_params, 1);
     println!("\n--- Benchmark Suite Evaluation (k = 1) ---");
     println!("  Mean Precision@1: {:.2}", metrics_bm25f.mean_precision);
-    println!("  Mean MRR:         {:.2}", metrics_bm25f.mean_reciprocal_rank);
+    println!(
+        "  Mean MRR:         {:.2}",
+        metrics_bm25f.mean_reciprocal_rank
+    );
     println!("  Mean NDCG@1:      {:.2}", metrics_bm25f.mean_ndcg);
 
     assert_eq!(metrics_bm25f.mean_precision, 1.0);

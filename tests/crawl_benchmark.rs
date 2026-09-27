@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use nexora::{
-    compute_pagerank, CrawlConfig, Crawler, DocId, InvertedIndex, MockFetcher, PageRankParams,
-    UrlFrontier, WebGraph,
+    CrawlConfig, Crawler, DocId, InvertedIndex, MockFetcher, PageRankParams, UrlFrontier, WebGraph,
+    compute_pagerank,
 };
 
 #[test]
@@ -142,9 +142,18 @@ fn test_multi_domain_crawl_and_graph_benchmark() {
 
     println!("✔ Crawl completed in {:.2?}", crawl_duration);
     println!("  - Pages successfully visited: {}", summary.pages_visited);
-    println!("  - Pages blocked by robots.txt: {}", summary.pages_disallowed);
-    println!("  - Hyperlinks discovered:      {}", summary.links_discovered);
-    println!("  - Indexed vocabulary size:    {}", index.vocabulary_size());
+    println!(
+        "  - Pages blocked by robots.txt: {}",
+        summary.pages_disallowed
+    );
+    println!(
+        "  - Hyperlinks discovered:      {}",
+        summary.links_discovered
+    );
+    println!(
+        "  - Indexed vocabulary size:    {}",
+        index.vocabulary_size()
+    );
 
     // Verify robots.txt blocked the /admin/ path
     assert!(
@@ -168,8 +177,14 @@ fn test_multi_domain_crawl_and_graph_benchmark() {
     println!("  - Graph Node Count: {}", graph.len());
     println!("  - Graph Edge Count: {}", graph.edge_count());
 
-    assert!(graph.len() >= 6, "Must have indexed at least 6 unique pages");
-    assert!(graph.edge_count() >= 5, "Must have extracted multiple inter-page links");
+    assert!(
+        graph.len() >= 6,
+        "Must have indexed at least 6 unique pages"
+    );
+    assert!(
+        graph.edge_count() >= 5,
+        "Must have extracted multiple inter-page links"
+    );
 
     // Compute PageRank with power iteration
     let pr_start = Instant::now();
@@ -185,7 +200,10 @@ fn test_multi_domain_crawl_and_graph_benchmark() {
 
     // Verify total probability mass conservation: sum(PR) == 1.0 within epsilon
     let total_mass: f64 = pr_scores.values().sum();
-    println!("  - Total PageRank Mass: {:.6} (conservation check)", total_mass);
+    println!(
+        "  - Total PageRank Mass: {:.6} (conservation check)",
+        total_mass
+    );
     assert!(
         (total_mass - 1.0).abs() < 1e-4,
         "Total PageRank probability mass must sum to 1.0"
@@ -195,13 +213,25 @@ fn test_multi_domain_crawl_and_graph_benchmark() {
     let mut ranked_docs: Vec<(&String, &DocId, f64)> = summary
         .documents
         .iter()
-        .map(|d| (&d.url, &d.doc_id, pr_scores.get(&d.doc_id).copied().unwrap_or(0.0)))
+        .map(|d| {
+            (
+                &d.url,
+                &d.doc_id,
+                pr_scores.get(&d.doc_id).copied().unwrap_or(0.0),
+            )
+        })
         .collect();
     ranked_docs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
 
     println!("\nTop Authority Pages in Link Graph:");
     for (rank, (url, doc_id, score)) in ranked_docs.iter().enumerate().take(5) {
-        println!("  {}. [Doc {}] PR: {:.5} -> {}", rank + 1, doc_id, score, url);
+        println!(
+            "  {}. [Doc {}] PR: {:.5} -> {}",
+            rank + 1,
+            doc_id,
+            score,
+            url
+        );
     }
 
     // The authority.com home page should have higher PageRank than the dangling archive

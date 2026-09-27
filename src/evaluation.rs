@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::index::{DocId, InvertedIndex, MultiFieldIndex};
 use crate::ranking::{
-    rank_bm25_with_pagerank, rank_bm25f, BM25FParams, BM25Params, HybridRankingParams,
+    BM25FParams, BM25Params, HybridBM25FParams, HybridRankingParams, rank_bm25_with_pagerank,
+    rank_bm25f, rank_bm25f_with_pagerank,
 };
-
 
 /// A single benchmark evaluation query paired with ground-truth relevance assessments.
 #[derive(Debug, Clone)]
@@ -143,6 +143,24 @@ pub fn ndcg_at_k(retrieved: &[DocId], relevance: &HashMap<DocId, u32>, k: usize)
     dcg / idcg
 }
 
+/// Computes Average Precision (AP) across all retrieved results.
+/// AP = (1 / total_relevant) * sum_{k=1..N} (Precision@k * is_relevant(k))
+pub fn average_precision(retrieved: &[DocId], relevant: &HashSet<DocId>) -> f64 {
+    if relevant.is_empty() {
+        return 0.0;
+    }
+    let mut num_relevant_seen = 0;
+    let mut sum_precision = 0.0;
+    for (idx, doc_id) in retrieved.iter().enumerate() {
+        if relevant.contains(doc_id) {
+            num_relevant_seen += 1;
+            let precision_at_rank = num_relevant_seen as f64 / (idx + 1) as f64;
+            sum_precision += precision_at_rank;
+        }
+    }
+    sum_precision / relevant.len() as f64
+}
+
 // -----------------------------------------------------------------------------
 // Benchmark Runner
 // -----------------------------------------------------------------------------
@@ -215,8 +233,7 @@ pub fn evaluate_hybrid_pagerank(
     let mut total_ndcg = 0.0;
 
     for qj in benchmark {
-        let scored_docs =
-            rank_bm25_with_pagerank(index, &qj.query, pagerank_scores, params);
+        let scored_docs = rank_bm25_with_pagerank(index, &qj.query, pagerank_scores, params);
         let retrieved_ids: Vec<DocId> = scored_docs.iter().map(|s| s.doc_id).collect();
         let relevant_set = qj.relevant_doc_ids();
 
@@ -279,6 +296,50 @@ pub fn evaluate_bm25f(
     }
 }
 
+/// Evaluates multi-field BM25F + PageRank hybrid ranking on a benchmark suite.
+pub fn evaluate_bm25f_with_pagerank(
+    multi_index: &MultiFieldIndex,
+    pagerank_scores: &HashMap<DocId, f64>,
+    benchmark: &[QueryJudgment],
+    params: &HybridBM25FParams,
+    k: usize,
+) -> BenchmarkMetrics {
+    if benchmark.is_empty() {
+        return BenchmarkMetrics {
+            k,
+            mean_precision: 0.0,
+            mean_recall: 0.0,
+            mean_reciprocal_rank: 0.0,
+            mean_ndcg: 0.0,
+        };
+    }
+
+    let mut total_p = 0.0;
+    let mut total_r = 0.0;
+    let mut total_rr = 0.0;
+    let mut total_ndcg = 0.0;
+
+    for qj in benchmark {
+        let scored_docs = rank_bm25f_with_pagerank(multi_index, &qj.query, pagerank_scores, params);
+        let retrieved_ids: Vec<DocId> = scored_docs.iter().map(|s| s.doc_id).collect();
+        let relevant_set = qj.relevant_doc_ids();
+
+        total_p += precision_at_k(&retrieved_ids, &relevant_set, k);
+        total_r += recall_at_k(&retrieved_ids, &relevant_set, k);
+        total_rr += reciprocal_rank(&retrieved_ids, &relevant_set);
+        total_ndcg += ndcg_at_k(&retrieved_ids, &qj.relevance, k);
+    }
+
+    let n = benchmark.len() as f64;
+    BenchmarkMetrics {
+        k,
+        mean_precision: total_p / n,
+        mean_recall: total_r / n,
+        mean_reciprocal_rank: total_rr / n,
+        mean_ndcg: total_ndcg / n,
+    }
+}
+
 /// Side-by-side comparison of baseline BM25 vs Hybrid BM25 + PageRank ranking models.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchmarkComparison {
@@ -313,11 +374,7 @@ impl BenchmarkComparison {
 
     fn calc_lift(baseline: f64, candidate: f64) -> f64 {
         if baseline <= 1e-9 {
-            if candidate > 1e-9 {
-                100.0
-            } else {
-                0.0
-            }
+            if candidate > 1e-9 { 100.0 } else { 0.0 }
         } else {
             ((candidate - baseline) / baseline) * 100.0
         }
@@ -376,6 +433,136 @@ pub fn compare_rankers(
 }
 
 // -----------------------------------------------------------------------------
+// Cranfield Dataset Integration
+// -----------------------------------------------------------------------------
+
+/// Represents a scientific document from the standard Cranfield IR test collection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CranfieldDocument {
+    pub id: DocId,
+    pub title: String,
+    pub body: String,
+}
+
+fn extract_xml_tag<'a>(source: &'a str, open_tag: &str, close_tag: &str) -> Option<&'a str> {
+    let start = source.find(open_tag)? + open_tag.len();
+    let end = source[start..].find(close_tag)? + start;
+    Some(&source[start..end])
+}
+
+/// Parses documents from Cranfield collection XML (`cran.all.1400.xml`).
+pub fn parse_cranfield_docs(content: &str) -> Vec<CranfieldDocument> {
+    let mut docs = Vec::new();
+    let mut remaining = content;
+
+    while let Some(start_doc) = remaining.find("<doc>") {
+        let after_start = &remaining[start_doc + 5..];
+        let end_doc = match after_start.find("</doc>") {
+            Some(pos) => pos,
+            None => break,
+        };
+        let doc_block = &after_start[..end_doc];
+        remaining = &after_start[end_doc + 6..];
+
+        let id = extract_xml_tag(doc_block, "<docno>", "</docno>")
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let title = extract_xml_tag(doc_block, "<title>", "</title>")
+            .map(|s| s.trim().replace('\n', " "))
+            .unwrap_or_default();
+        let body = extract_xml_tag(doc_block, "<text>", "</text>")
+            .map(|s| s.trim().replace('\n', " "))
+            .unwrap_or_default();
+
+        docs.push(CranfieldDocument { id, title, body });
+    }
+    docs
+}
+
+/// Parses queries from Cranfield collection XML (`cran.qry.xml`).
+pub fn parse_cranfield_queries(content: &str) -> Vec<(u32, String)> {
+    let mut queries = Vec::new();
+    let mut remaining = content;
+
+    while let Some(start_top) = remaining.find("<top>") {
+        let after_start = &remaining[start_top + 5..];
+        let end_top = match after_start.find("</top>") {
+            Some(pos) => pos,
+            None => break,
+        };
+        let top_block = &after_start[..end_top];
+        remaining = &after_start[end_top + 6..];
+
+        let id = extract_xml_tag(top_block, "<num>", "</num>")
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let title = extract_xml_tag(top_block, "<title>", "</title>")
+            .map(|s| s.trim().replace('\n', " "))
+            .unwrap_or_default();
+
+        queries.push((id, title));
+    }
+    queries
+}
+
+/// Parses relevance judgments from TREC format (`cranqrel.trec.txt`).
+pub fn parse_cranfield_qrels(content: &str) -> HashMap<u32, HashMap<DocId, u32>> {
+    let mut qrels: HashMap<u32, HashMap<DocId, u32>> = HashMap::new();
+    for line in content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 4 {
+            if let (Ok(qid), Ok(docno), Ok(rel)) = (
+                parts[0].parse::<u32>(),
+                parts[2].parse::<DocId>(),
+                parts[3].parse::<u32>(),
+            ) {
+                if rel > 0 {
+                    qrels.entry(qid).or_default().insert(docno, rel);
+                }
+            }
+        }
+    }
+    qrels
+}
+
+/// Parses the full Cranfield collection into documents and query judgments.
+pub fn parse_cranfield_dataset(
+    docs_xml: &str,
+    queries_xml: &str,
+    qrels_txt: &str,
+) -> (Vec<CranfieldDocument>, Vec<QueryJudgment>) {
+    let docs = parse_cranfield_docs(docs_xml);
+    let queries = parse_cranfield_queries(queries_xml);
+    let qrels = parse_cranfield_qrels(qrels_txt);
+
+    let mut judgments = Vec::new();
+    for (seq_idx, (raw_id, query_text)) in queries.into_iter().enumerate() {
+        let qid_seq = (seq_idx + 1) as u32;
+        // In the standard Cranfield collection, qrels are keyed by the 1-based sequential
+        // index of the query in cran.qry (1..=225), not the historical sparse .I identifier.
+        if let Some(rel_map) = qrels.get(&qid_seq).or_else(|| qrels.get(&raw_id)) {
+            judgments.push(QueryJudgment {
+                query: query_text,
+                relevance: rel_map.clone(),
+            });
+        }
+    }
+
+    (docs, judgments)
+}
+
+/// Loads the Cranfield collection from a directory containing the three standard files.
+pub fn load_cranfield_dataset<P: AsRef<std::path::Path>>(
+    dir_path: P,
+) -> std::io::Result<(Vec<CranfieldDocument>, Vec<QueryJudgment>)> {
+    let dir = dir_path.as_ref();
+    let docs_xml = std::fs::read_to_string(dir.join("cran.all.1400.xml"))?;
+    let queries_xml = std::fs::read_to_string(dir.join("cran.qry.xml"))?;
+    let qrels_txt = std::fs::read_to_string(dir.join("cranqrel.trec.txt"))?;
+    Ok(parse_cranfield_dataset(&docs_xml, &queries_xml, &qrels_txt))
+}
+
+// -----------------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------------
 
@@ -421,16 +608,22 @@ mod tests {
     #[test]
     fn test_end_to_end_bm25_benchmark() {
         let mut index = InvertedIndex::new();
-        index.add_document(0, "Rust systems programming with memory safety and performance");
-        index.add_document(1, "Python machine learning, data science, and deep neural networks");
-        index.add_document(2, "Search engines use inverted indexes and BM25 ranking algorithms");
+        index.add_document(
+            0,
+            "Rust systems programming with memory safety and performance",
+        );
+        index.add_document(
+            1,
+            "Python machine learning, data science, and deep neural networks",
+        );
+        index.add_document(
+            2,
+            "Search engines use inverted indexes and BM25 ranking algorithms",
+        );
         index.add_document(3, "Web crawlers fetch HTML pages over HTTP networks");
 
         let benchmark = vec![
-            QueryJudgment::graded(
-                "rust memory safety",
-                &[(0, 3), (2, 0), (1, 0), (3, 0)],
-            ),
+            QueryJudgment::graded("rust memory safety", &[(0, 3), (2, 0), (1, 0), (3, 0)]),
             QueryJudgment::graded(
                 "search engine inverted index",
                 &[(2, 3), (3, 1), (0, 0), (1, 0)],
@@ -440,7 +633,10 @@ mod tests {
         let metrics = evaluate_bm25(&index, &benchmark, 3, &BM25Params::default());
 
         println!("\nBenchmark Quality Metrics (K = 3):");
-        println!("  Mean Precision@3:  {:.2}%", metrics.mean_precision * 100.0);
+        println!(
+            "  Mean Precision@3:  {:.2}%",
+            metrics.mean_precision * 100.0
+        );
         println!("  Mean Recall@3:     {:.2}%", metrics.mean_recall * 100.0);
         println!("  MRR:               {:.4}", metrics.mean_reciprocal_rank);
         println!("  Mean NDCG@3:       {:.2}%", metrics.mean_ndcg * 100.0);
@@ -452,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_comparative_benchmark_pagerank_lift() {
-        use crate::graph::{compute_pagerank, PageRankParams, WebGraph};
+        use crate::graph::{PageRankParams, WebGraph, compute_pagerank};
 
         let mut index = InvertedIndex::new();
         // Doc 0: Keyword-stuffed page, but unlinked
@@ -503,7 +699,12 @@ mod tests {
     #[test]
     fn test_bm25f_benchmark_evaluation() {
         let mut multi = MultiFieldIndex::new();
-        multi.add_document(0, "Rust Programming", "Language syntax and memory safety", "");
+        multi.add_document(
+            0,
+            "Rust Programming",
+            "Language syntax and memory safety",
+            "",
+        );
         multi.add_document(
             1,
             "Gardening Guide",
@@ -519,5 +720,49 @@ mod tests {
         assert_eq!(metrics.mean_reciprocal_rank, 1.0);
         assert_eq!(metrics.mean_ndcg, 1.0);
     }
-}
 
+    #[test]
+    fn test_average_precision() {
+        let relevant: HashSet<DocId> = vec![2, 4].into_iter().collect();
+
+        // Perfect ranking [2, 4, 1, 3]: seen 1 at 1 (P=1.0), seen 2 at 2 (P=1.0) -> AP = 1.0
+        let perfect = vec![2, 4, 1, 3];
+        assert_eq!(average_precision(&perfect, &relevant), 1.0);
+
+        // Suboptimal [1, 2, 3, 4]: seen 1 at 2 (P=0.5), seen 2 at 4 (P=0.5) -> AP = 0.5
+        let sub = vec![1, 2, 3, 4];
+        assert_eq!(average_precision(&sub, &relevant), 0.5);
+
+        // Empty relevant set
+        assert_eq!(average_precision(&sub, &HashSet::new()), 0.0);
+    }
+
+    #[test]
+    fn test_cranfield_xml_parsing() {
+        let doc_xml = "<doc><docno>42</docno><title>Aerodynamics of Wings</title><text>Study of lift.</text></doc>";
+        let qry_xml = "<top><num>1</num><title>wing aerodynamics</title></top>";
+        let qrel_txt = "1 0 42 1\n1 0 99 0\n";
+
+        let (docs, judgments) = parse_cranfield_dataset(doc_xml, qry_xml, qrel_txt);
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].id, 42);
+        assert_eq!(docs[0].title, "Aerodynamics of Wings");
+        assert_eq!(docs[0].body, "Study of lift.");
+
+        assert_eq!(judgments.len(), 1);
+        assert_eq!(judgments[0].query, "wing aerodynamics");
+        assert_eq!(judgments[0].relevance.get(&42), Some(&1));
+        assert_eq!(judgments[0].relevance.get(&99), None); // 0 is filtered out
+    }
+
+    #[test]
+    fn test_cranfield_file_inspection() {
+        let path = std::path::Path::new("data/cranfield");
+        if !path.exists() {
+            return;
+        }
+        let (docs, judgments) = load_cranfield_dataset(path).unwrap();
+        assert_eq!(docs.len(), 1400);
+        assert_eq!(judgments.len(), 225);
+    }
+}

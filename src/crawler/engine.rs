@@ -394,7 +394,11 @@ mod tests {
         assert!(results.is_empty(), "Admin secret page must not be indexed");
 
         // Verify public news is indexed and searchable
-        let news_results = rank_bm25(&index, "exciting news", &crate::ranking::BM25Params::default());
+        let news_results = rank_bm25(
+            &index,
+            "exciting news",
+            &crate::ranking::BM25Params::default(),
+        );
         assert!(!news_results.is_empty(), "Public news page must be indexed");
     }
 }

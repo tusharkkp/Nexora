@@ -172,7 +172,8 @@ pub fn compute_pagerank(graph: &WebGraph, params: &PageRankParams) -> HashMap<Do
     }
 
     // Initialize probability distribution vector PR^(0)
-    let mut current_pr: HashMap<DocId, f64> = nodes.iter().map(|&node| (node, initial_val)).collect();
+    let mut current_pr: HashMap<DocId, f64> =
+        nodes.iter().map(|&node| (node, initial_val)).collect();
     let mut next_pr: HashMap<DocId, f64> = HashMap::with_capacity(n);
 
     let d = params.damping;

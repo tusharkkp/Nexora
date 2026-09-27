@@ -88,11 +88,21 @@ pub fn generate_snippet(
 
     // If the entire text fits within max_chars, highlight all matches in full text
     if clean_text.chars().count() <= config.max_chars {
-        return highlight_window(clean_text, 0, clean_text.len(), &doc_terms, &matched_indices, &config.format, false, false);
+        return highlight_window(
+            clean_text,
+            0,
+            clean_text.len(),
+            &doc_terms,
+            &matched_indices,
+            &config.format,
+            false,
+            false,
+        );
     }
 
     // 3. Find the best scoring window centered around term matches
-    let (best_start, best_end) = select_best_window(clean_text, &doc_terms, &matched_indices, config.max_chars);
+    let (best_start, best_end) =
+        select_best_window(clean_text, &doc_terms, &matched_indices, config.max_chars);
 
     let has_prefix = best_start > 0;
     let has_suffix = best_end < clean_text.len();
@@ -147,7 +157,8 @@ fn select_best_window(
         }
 
         let pos_bias = 1.0 - (snapped_start as f64 / (text.len() as f64 + 1.0)) * 0.1;
-        let score = (distinct_in_window.len() as f64 * 100.0 + total_in_window as f64 * 10.0) * pos_bias;
+        let score =
+            (distinct_in_window.len() as f64 * 100.0 + total_in_window as f64 * 10.0) * pos_bias;
 
         if score > best_score {
             best_score = score;
@@ -176,12 +187,17 @@ fn snap_boundaries(text: &str, mut start: usize, mut end: usize) -> (usize, usiz
 
     // Snap end to previous word boundary if not at end
     if end < text.len() {
-        if let Some(space_offset) = text[..end].rfind(|c: char| c.is_whitespace() || c == '.' || c == '!' || c == '?') {
+        if let Some(space_offset) =
+            text[..end].rfind(|c: char| c.is_whitespace() || c == '.' || c == '!' || c == '?')
+        {
             if space_offset > start {
                 end = space_offset;
                 // If it snapped on punctuation, include that punctuation
                 let trailing = &text[space_offset..];
-                if trailing.starts_with('.') || trailing.starts_with('!') || trailing.starts_with('?') {
+                if trailing.starts_with('.')
+                    || trailing.starts_with('!')
+                    || trailing.starts_with('?')
+                {
                     end = (space_offset + 1).min(text.len());
                 }
             }

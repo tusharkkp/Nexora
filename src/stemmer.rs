@@ -16,7 +16,10 @@ pub fn stem(word: &str) -> String {
     }
 
     // Guard 2: Skip tokens containing non-alphabetic characters (e.g. URLs, numbers, IPs)
-    if !word.chars().all(|c| c.is_alphabetic() || c == '\'' || c == '’') {
+    if !word
+        .chars()
+        .all(|c| c.is_alphabetic() || c == '\'' || c == '’')
+    {
         return word.to_string();
     }
 
@@ -135,7 +138,12 @@ fn ends_with(chars: &[char], suffix: &str) -> bool {
 }
 
 /// Helper: Replaces `suffix` with `replacement` if the stem matches condition.
-fn replace_suffix(chars: &mut Vec<char>, suffix: &str, replacement: &str, condition: impl FnOnce(&[char]) -> bool) -> bool {
+fn replace_suffix(
+    chars: &mut Vec<char>,
+    suffix: &str,
+    replacement: &str,
+    condition: impl FnOnce(&[char]) -> bool,
+) -> bool {
     if ends_with(chars, suffix) {
         let stem_len = chars.len() - suffix.chars().count();
         if condition(&chars[..stem_len]) {
@@ -310,7 +318,8 @@ fn step_5(chars: &mut Vec<char>) {
 
     // Step 5b: Remove double 'l' if m > 1 (e.g. controll -> control)
     let len = chars.len();
-    if len >= 2 && chars[len - 1] == 'l' && chars[len - 2] == 'l' && measure(&chars[..len - 1]) > 1 {
+    if len >= 2 && chars[len - 1] == 'l' && chars[len - 2] == 'l' && measure(&chars[..len - 1]) > 1
+    {
         chars.pop();
     }
 }

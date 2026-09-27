@@ -185,15 +185,34 @@ fn starts_with_tag(chars: &[char], tag_name: &str) -> bool {
 /// Checks if tag is a block element (`<p>`, `<div>`, `<h1>`-`<h6>`, `<li>`, `<br>`, etc.).
 fn is_block_tag(chars: &[char]) -> bool {
     const BLOCK_TAGS: &[&str] = &[
-        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br", "tr", "section", "article",
-        "header", "footer", "nav", "main", "blockquote",
+        "p",
+        "div",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "br",
+        "tr",
+        "section",
+        "article",
+        "header",
+        "footer",
+        "nav",
+        "main",
+        "blockquote",
     ];
     for &tag in BLOCK_TAGS {
         if starts_with_tag(chars, tag) {
             return true;
         }
         // Also check closing tag </tag>
-        if chars.len() > 2 && chars[0] == '<' && chars[1] == '/' && starts_with_tag(&chars[1..], tag)
+        if chars.len() > 2
+            && chars[0] == '<'
+            && chars[1] == '/'
+            && starts_with_tag(&chars[1..], tag)
         {
             return true;
         }
@@ -359,6 +378,9 @@ mod tests {
         let page = extract_page("https://example.com/", html);
 
         // Ensures words from consecutive tags aren't merged like "HeadingFirst"
-        assert_eq!(page.text, "Heading First paragraph & more. Second paragraph.");
+        assert_eq!(
+            page.text,
+            "Heading First paragraph & more. Second paragraph."
+        );
     }
 }
