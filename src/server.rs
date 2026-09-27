@@ -9,12 +9,15 @@ use crate::crawler::{
     HttpFetcher, UrlFrontier,
 };
 use crate::graph::{PageRankParams, WebGraph, compute_pagerank};
+use crate::hybrid::{
+    HybridFusionStrategy, HybridSearchParams, ScoredHybridDocument, SearchMode, rank_hybrid,
+};
 use crate::index::{DocId, InvertedIndex, MultiFieldIndex};
-use crate::ranking::{HybridBM25FParams, ScoredDocument, rank_bm25f_with_pagerank};
 use crate::snippet::{HighlightFormat, SnippetConfig, generate_snippet};
 use crate::spelling::SpellChecker;
 use crate::storage::DocumentMetadata;
 use crate::trie::PrefixTrie;
+use crate::vector::{SemanticEmbedder, TextEmbedder, VectorIndex};
 
 /// Configuration for the HTTP server.
 #[derive(Debug, Clone)]
@@ -39,6 +42,8 @@ pub struct SearchEngineState {
     pub doc_metadata: HashMap<DocId, DocumentMetadata>,
     pub trie: PrefixTrie,
     pub spell_checker: SpellChecker,
+    pub vector_index: VectorIndex,
+    pub embedder: SemanticEmbedder,
 }
 
 impl SearchEngineState {
@@ -59,12 +64,21 @@ impl SearchEngineState {
                 .map(|d| format!("{} {}", d.title, d.body)),
         );
 
+        let embedder = SemanticEmbedder::default();
+        let mut vector_index = VectorIndex::new(embedder.dimension());
+        for (&id, doc) in &doc_metadata {
+            let combined = format!("{} {}", doc.title, doc.body);
+            vector_index.add_vector(id, embedder.embed(&combined));
+        }
+
         Self {
             index,
             multi_index,
             doc_metadata,
             trie,
             spell_checker,
+            vector_index,
+            embedder,
         }
     }
 
@@ -136,16 +150,25 @@ impl SearchEngineState {
             metadata.values().map(|d| format!("{} {}", d.title, d.body)),
         );
 
+        let embedder = SemanticEmbedder::default();
+        let mut vector_index = VectorIndex::new(embedder.dimension());
+        for (&id, doc) in &metadata {
+            let combined = format!("{} {}", doc.title, doc.body);
+            vector_index.add_vector(id, embedder.embed(&combined));
+        }
+
         Self {
             index,
             multi_index,
             doc_metadata: metadata,
             trie,
             spell_checker,
+            vector_index,
+            embedder,
         }
     }
 
-    /// Rebuilds multi-field index, trie, and spell checker after a new crawl or index update.
+    /// Rebuilds multi-field index, trie, spell checker, and vector index after a new crawl or index update.
     pub fn rebuild_indexes(&mut self) {
         let mut multi = MultiFieldIndex::new();
         for (&id, doc) in &self.doc_metadata {
@@ -163,6 +186,13 @@ impl SearchEngineState {
                 .values()
                 .map(|d| format!("{} {}", d.title, d.body)),
         );
+
+        let mut vector_index = VectorIndex::new(self.embedder.dimension());
+        for (&id, doc) in &self.doc_metadata {
+            let combined = format!("{} {}", doc.title, doc.body);
+            vector_index.add_vector(id, self.embedder.embed(&combined));
+        }
+        self.vector_index = vector_index;
     }
 
     /// Ingests a crawled document incrementally into the live search engine state.
@@ -172,6 +202,7 @@ impl SearchEngineState {
     /// - `MultiFieldIndex`
     /// - `PrefixTrie`
     /// - `SpellChecker`
+    /// - `VectorIndex`
     /// - `doc_metadata`
     ///
     /// Assigns and returns a new unique `DocId`.
@@ -185,6 +216,13 @@ impl SearchEngineState {
                     meta.body = page.text.clone();
                 }
             }
+            let combined = if page.title.is_empty() {
+                page.text.clone()
+            } else {
+                format!("{} {}", page.title, page.text)
+            };
+            self.vector_index
+                .add_vector(existing_id, self.embedder.embed(&combined));
             return existing_id;
         }
 
@@ -207,6 +245,8 @@ impl SearchEngineState {
             .add_document(doc_id, &page.title, &page.text, "");
         self.trie.add_document_text(&combined);
         self.spell_checker.add_document_text(&combined);
+        self.vector_index
+            .add_vector(doc_id, self.embedder.embed(&combined));
         self.doc_metadata.insert(
             doc_id,
             DocumentMetadata {
@@ -315,10 +355,15 @@ impl SearchServer {
                 ("GET", "/api/search") => {
                     let q = params.get("q").cloned().unwrap_or_default();
                     let limit: usize = params.get("k").and_then(|k| k.parse().ok()).unwrap_or(20);
+                    let mode = params
+                        .get("mode")
+                        .cloned()
+                        .unwrap_or_else(|| "hybrid".to_string());
+                    let alpha: Option<f32> = params.get("alpha").and_then(|a| a.parse().ok());
 
                     let json = {
                         let lock = state.read().unwrap();
-                        handle_api_search(&lock, &q, limit)
+                        handle_api_search(&lock, &q, limit, &mode, alpha)
                     };
 
                     let response = Response::from_string(json)
@@ -504,13 +549,21 @@ pub fn json_escape(s: &str) -> String {
     out
 }
 
-fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> String {
+fn handle_api_search(
+    state: &SearchEngineState,
+    query: &str,
+    limit: usize,
+    mode_str: &str,
+    alpha: Option<f32>,
+) -> String {
     let start = Instant::now();
     let clean = query.trim();
+    let mode = SearchMode::parse(mode_str);
 
     if clean.is_empty() {
         return format!(
-            r#"{{"query":"","total":0,"took_ms":0.0,"did_you_mean":null,"results":[]}}"#
+            r#"{{"query":"","mode":"{}","total":0,"took_ms":0.0,"did_you_mean":null,"results":[]}}"#,
+            mode.as_str()
         );
     }
 
@@ -520,22 +573,43 @@ fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> St
         .map(|(&id, meta)| (id, meta.pagerank))
         .collect();
 
-    let hybrid_f_params = HybridBM25FParams::default();
-    let mut results: Vec<ScoredDocument> =
-        rank_bm25f_with_pagerank(&state.multi_index, clean, &pr_map, &hybrid_f_params);
+    let mut hybrid_params = HybridSearchParams {
+        mode,
+        ..HybridSearchParams::default()
+    };
+    if let Some(a) = alpha {
+        hybrid_params.fusion_strategy = HybridFusionStrategy::LinearScore {
+            alpha: a.clamp(0.0, 1.0),
+        };
+    }
+
+    let mut results: Vec<ScoredHybridDocument> = rank_hybrid(
+        &state.multi_index,
+        &state.vector_index,
+        clean,
+        &state.embedder,
+        &pr_map,
+        &hybrid_params,
+    );
 
     let mut did_you_mean: Option<String> = None;
 
     if results.is_empty() {
         if let Some(suggested) = state.spell_checker.suggest_query(clean) {
             did_you_mean = Some(suggested.clone());
-            results =
-                rank_bm25f_with_pagerank(&state.multi_index, &suggested, &pr_map, &hybrid_f_params);
+            results = rank_hybrid(
+                &state.multi_index,
+                &state.vector_index,
+                &suggested,
+                &state.embedder,
+                &pr_map,
+                &hybrid_params,
+            );
         }
     }
 
     let total = results.len();
-    let top_results: &[ScoredDocument] = if results.len() > limit {
+    let top_results: &[ScoredHybridDocument] = if results.len() > limit {
         &results[..limit]
     } else {
         &results
@@ -562,10 +636,12 @@ fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> St
         let snippet = generate_snippet(body, active_query, state.index.analyzer(), &snippet_cfg);
 
         results_json.push_str(&format!(
-            r#"{{"doc_id":{},"rank":{},"score":{:.4},"pagerank":{:.4},"title":"{}","url":"{}","snippet":"{}"}}"#,
+            r#"{{"doc_id":{},"rank":{},"score":{:.4},"bm25_score":{:.4},"semantic_similarity":{:.4},"pagerank":{:.4},"title":"{}","url":"{}","snippet":"{}"}}"#,
             scored.doc_id,
             i + 1,
             scored.score,
+            scored.bm25f_score,
+            scored.semantic_similarity,
             pr,
             json_escape(title),
             json_escape(url),
@@ -580,8 +656,9 @@ fn handle_api_search(state: &SearchEngineState, query: &str, limit: usize) -> St
     };
 
     format!(
-        r#"{{"query":"{}","total":{},"took_ms":{:.2},"did_you_mean":{},"results":[{}]}}"#,
+        r#"{{"query":"{}","mode":"{}","total":{},"took_ms":{:.2},"did_you_mean":{},"results":[{}]}}"#,
         json_escape(clean),
+        mode.as_str(),
         total,
         took_ms,
         did_you_mean_json,
@@ -614,10 +691,11 @@ fn handle_api_suggest(state: &SearchEngineState, prefix: &str, limit: usize) -> 
 
 fn handle_api_stats(state: &SearchEngineState) -> String {
     format!(
-        r#"{{"total_documents":{},"vocabulary_size":{},"average_doc_length":{:.2}}}"#,
+        r#"{{"total_documents":{},"vocabulary_size":{},"average_doc_length":{:.2},"vector_index_size":{}}}"#,
         state.index.total_documents(),
         state.index.vocabulary_size(),
-        state.index.average_doc_length()
+        state.index.average_doc_length(),
+        state.vector_index.len()
     )
 }
 
@@ -864,6 +942,40 @@ pub fn render_web_serp_html() -> String {
       background: var(--accent-hover);
     }
 
+    .search-mode-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      margin-top: 0.85rem;
+    }
+
+    .mode-tab {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--card-border);
+      border-radius: 9999px;
+      color: var(--text-muted);
+      padding: 0.35rem 0.9rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s ease;
+    }
+
+    .mode-tab:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+    }
+
+    .mode-tab.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent-hover);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
     /* Autocomplete dropdown */
     .autocomplete-dropdown {
       position: absolute;
@@ -1005,6 +1117,12 @@ pub fn render_web_serp_html() -> String {
       background: var(--badge-pr-bg);
       color: var(--badge-pr);
       border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-semantic {
+      background: rgba(168, 85, 247, 0.15);
+      color: #c084fc;
+      border: 1px solid rgba(168, 85, 247, 0.3);
     }
 
     .result-url {
@@ -1307,6 +1425,20 @@ pub fn render_web_serp_html() -> String {
         </button>
         <div id="autocomplete" class="autocomplete-dropdown"></div>
       </div>
+      <div class="search-mode-tabs">
+        <button class="mode-tab active" data-mode="hybrid" onclick="setSearchMode('hybrid')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          ⚡ Hybrid (BM25 + Semantic)
+        </button>
+        <button class="mode-tab" data-mode="lexical" onclick="setSearchMode('lexical')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          📝 BM25 Lexical
+        </button>
+        <button class="mode-tab" data-mode="semantic" onclick="setSearchMode('semantic')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="4" cy="8" r="2"/><circle cx="20" cy="8" r="2"/><circle cx="8" cy="19" r="2"/><circle cx="16" cy="19" r="2"/><line x1="6" y1="8" x2="9" y2="11"/><line x1="18" y1="8" x2="15" y2="11"/></svg>
+          🧠 Semantic Vector
+        </button>
+      </div>
     </div>
 
     <div class="search-meta">
@@ -1404,13 +1536,25 @@ pub fn render_web_serp_html() -> String {
 
     let debounceTimer = null;
     let selectedIndex = -1;
+    let currentSearchMode = 'hybrid';
+
+    function setSearchMode(mode) {
+      currentSearchMode = mode;
+      document.querySelectorAll('.mode-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.getAttribute('data-mode') === mode);
+      });
+      const q = queryInput.value.trim();
+      if (q) {
+        performSearch(q);
+      }
+    }
 
     // Load initial stats
     function refreshStats() {
       fetch('/api/stats')
         .then(res => res.json())
         .then(stats => {
-          statsBadge.textContent = `${stats.total_documents} docs · ${stats.vocabulary_size} terms`;
+          statsBadge.textContent = `${stats.total_documents} docs · ${stats.vocabulary_size} terms · ${stats.vector_index_size || stats.total_documents} vectors`;
         })
         .catch(() => {
           statsBadge.textContent = 'Nexora Engine';
@@ -1536,10 +1680,10 @@ pub fn render_web_serp_html() -> String {
       resultsCount.textContent = 'Searching index...';
       didYouMeanContainer.innerHTML = '';
 
-      fetch(`/api/search?q=${encodeURIComponent(query)}&k=20`)
+      fetch(`/api/search?q=${encodeURIComponent(query)}&k=20&mode=${currentSearchMode}`)
         .then(res => res.json())
         .then(data => {
-          resultsCount.textContent = `Found ${data.total} results in ${data.took_ms.toFixed(2)} ms`;
+          resultsCount.textContent = `Found ${data.total} results in ${data.took_ms.toFixed(2)} ms (${data.mode.toUpperCase()})`;
 
           if (data.did_you_mean) {
             didYouMeanContainer.innerHTML = `
@@ -1551,7 +1695,7 @@ pub fn render_web_serp_html() -> String {
             resultsContainer.innerHTML = `
               <div class="empty-state">
                 <h3>No documents matched your query</h3>
-                <p>Try searching for broader terms or check spelling.</p>
+                <p>Try switching search modes (e.g. <b>Semantic Vector</b>) or searching broader terms.</p>
               </div>
             `;
             return;
@@ -1573,10 +1717,22 @@ pub fn render_web_serp_html() -> String {
 
             const badges = document.createElement('div');
             badges.className = 'result-badges';
-            badges.innerHTML = `
-              <span class="badge badge-score" title="BM25 Hybrid Relevance Score">BM25: ${item.score.toFixed(3)}</span>
-              <span class="badge badge-pr" title="PageRank Authority Mass">PR: ${item.pagerank.toFixed(3)}</span>
-            `;
+            let badgeHtml = '';
+            if (currentSearchMode === 'semantic') {
+              badgeHtml += `<span class="badge badge-semantic" title="Dense Cosine Semantic Similarity">Semantic: ${(item.semantic_similarity * 100).toFixed(1)}%</span>`;
+            } else if (currentSearchMode === 'lexical') {
+              badgeHtml += `<span class="badge badge-score" title="BM25 Lexical Score">BM25: ${item.bm25_score.toFixed(2)}</span>`;
+            } else {
+              badgeHtml += `<span class="badge badge-score" title="Reciprocal Rank Fusion Score">Fused: ${item.score.toFixed(3)}</span>`;
+              if (item.bm25_score > 0) {
+                badgeHtml += `<span class="badge badge-score" style="opacity:0.85;" title="BM25 Lexical Score">BM25: ${item.bm25_score.toFixed(2)}</span>`;
+              }
+              if (item.semantic_similarity > 0.01) {
+                badgeHtml += `<span class="badge badge-semantic" title="Dense Cosine Semantic Similarity">Semantic: ${(item.semantic_similarity * 100).toFixed(0)}%</span>`;
+              }
+            }
+            badgeHtml += `<span class="badge badge-pr" title="PageRank Authority Mass">PR: ${item.pagerank.toFixed(3)}</span>`;
+            badges.innerHTML = badgeHtml;
 
             header.appendChild(title);
             header.appendChild(badges);
@@ -1767,9 +1923,22 @@ mod tests {
     #[test]
     fn test_api_search_output() {
         let state = SearchEngineState::default_demo();
-        let json = handle_api_search(&state, "rust", 5);
+        let json = handle_api_search(&state, "rust", 5, "hybrid", None);
         assert!(json.contains("\"query\":\"rust\""));
+        assert!(json.contains("\"mode\":\"hybrid\""));
         assert!(json.contains("\"total\":"));
+        assert!(json.contains("\"results\":["));
+        assert!(json.contains("Rust Systems Programming"));
+        assert!(json.contains("\"bm25_score\":"));
+        assert!(json.contains("\"semantic_similarity\":"));
+    }
+
+    #[test]
+    fn test_api_search_semantic_mode() {
+        let state = SearchEngineState::default_demo();
+        // Query "concurrency safety" has 0 lexical overlap with "ownership and borrow checker prevent data races"
+        let json = handle_api_search(&state, "concurrency safety", 5, "semantic", None);
+        assert!(json.contains("\"mode\":\"semantic\""));
         assert!(json.contains("\"results\":["));
         assert!(json.contains("Rust Systems Programming"));
     }
@@ -1803,9 +1972,10 @@ mod tests {
             "Autonomous Web Crawling and Incremental Indexing"
         );
         assert_eq!(state.doc_metadata.get(&new_id).unwrap().pagerank, 0.45);
+        assert_eq!(state.vector_index.len(), initial_doc_count + 1);
 
         // Immediate search retrieval
-        let json = handle_api_search(&state, "autonomous crawling", 5);
+        let json = handle_api_search(&state, "autonomous crawling", 5, "hybrid", None);
         assert!(json.contains("Autonomous Web Crawling"));
 
         // Immediate autocomplete suggestion

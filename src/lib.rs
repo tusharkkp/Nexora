@@ -17,6 +17,7 @@ pub mod crawler;
 pub mod evaluation;
 pub mod feedback;
 pub mod graph;
+pub mod hybrid;
 pub mod index;
 pub mod query;
 pub mod ranking;
@@ -27,6 +28,7 @@ pub mod stemmer;
 pub mod storage;
 pub mod tokenizer;
 pub mod trie;
+pub mod vector;
 
 pub use analyzer::{Analyzer, Term};
 pub use compression::{
@@ -52,6 +54,9 @@ pub use feedback::{
     rank_bm25f_with_prf,
 };
 pub use graph::{PageRankParams, WebGraph, compute_pagerank};
+pub use hybrid::{
+    HybridFusionStrategy, HybridSearchParams, ScoredHybridDocument, SearchMode, rank_hybrid,
+};
 pub use index::{DocId, Field, InvertedIndex, MultiFieldIndex, Posting};
 pub use query::{
     QueryNode, QueryParseError, QueryToken, execute_query, parse_query, tokenize_query,
@@ -71,3 +76,7 @@ pub use storage::{
 };
 pub use tokenizer::{Token, tokenize};
 pub use trie::{PrefixSuggestion, PrefixTrie, TrieNode};
+pub use vector::{
+    SemanticEmbedder, TextEmbedder, VectorIndex, VectorSearchResult, cosine_similarity,
+    dot_product, l2_norm, l2_normalize,
+};
